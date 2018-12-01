@@ -88,7 +88,7 @@ impl AsyncContext {
     }
 
     /// Returns staging memory, and a fence to signal to free it.
-    pub fn alloc(&mut self, bytes: usize) -> (*mut [u8], Fence) {
+    pub async fn alloc(&mut self, bytes: usize) -> (*mut [u8], Fence) {
         let fence = self.fence_factory.get();
         loop {
             match self.staging.alloc.alloc(bytes, fence.clone()) {
@@ -96,7 +96,7 @@ impl AsyncContext {
                     return (bytes, fence);
                 }
                 Err(e) => {
-                    e.wait_for.block();
+                    await!(e.wait_for);
                 }
             }
         }
