@@ -102,6 +102,10 @@ struct FenceFactoryInner {
 /// For this future to complete:
 /// - the corresponding `FutureFactory` must be `poll`ed on a regular basis
 /// - `submitted` must be invoked after the fence has been submitted to the Vulkan implementation
+///
+/// # Safety
+/// The behavior is undefined if a `Fence` is dropped after the Vulkan device its factory was
+/// created from is destroyed.
 #[derive(Clone)]
 pub struct Fence(Arc<FenceInner>);
 
