@@ -20,28 +20,28 @@ use ash::{version::DeviceV1_0, vk};
 /// # fn stub(device: std::sync::Arc<ash::Device>) {
 /// use futures::task::LocalSpawnExt;
 /// let executor = futures::executor::LocalPool::new();
-/// let factory = lahar::FenceFactory::new(device.clone());
-/// let fence = factory.get();
+/// let factory = lahar::fence::Factory::new(device.clone());
+/// let (fence, signaled) = factory.get();
 /// do_something_with(fence.handle());
 /// unsafe { fence.submitted(); }
 /// executor.spawner().spawn_local(async {
-///     await!(fence);
+///     await!(signaled);
 ///     println!("fence signaled");
 /// });
 /// loop { factory.poll(); std::thread::yield_now(); }
 /// # }
 /// ```
 #[derive(Clone)]
-pub struct FenceFactory {
+pub struct Factory {
     device: Arc<ash::Device>,
-    inner: Arc<Mutex<FenceFactoryInner>>,
+    inner: Arc<Mutex<FactoryInner>>,
 }
 
-impl FenceFactory {
+impl Factory {
     pub fn new(device: Arc<ash::Device>) -> Self {
         Self {
             device,
-            inner: Arc::new(Mutex::new(FenceFactoryInner {
+            inner: Arc::new(Mutex::new(FactoryInner {
                 fences: Vec::new(),
                 tasks: Vec::new(),
             })),
@@ -49,13 +49,13 @@ impl FenceFactory {
     }
 
     /// Create an unsignalled fence
-    pub fn get(&self) -> (Fence, FenceSignaled) {
+    pub fn get(&self) -> (Fence, Signaled) {
         let handle = unsafe {
             self.device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .unwrap()
         };
-        let inner = Arc::new(FenceInner {
+        let inner = Arc::new(Inner {
             device: Arc::clone(&self.device),
             factory: Arc::clone(&self.inner),
             submitted: Mutex::new(SubmitState::None),
@@ -66,7 +66,7 @@ impl FenceFactory {
             Fence {
                 inner: inner.clone(),
             },
-            FenceSignaled {
+            Signaled {
                 inner: inner.clone(),
             },
         )
@@ -100,7 +100,7 @@ impl FenceFactory {
     }
 }
 
-struct FenceFactoryInner {
+struct FactoryInner {
     fences: Vec<vk::Fence>,
     tasks: Vec<Waker>,
 }
@@ -108,14 +108,14 @@ struct FenceFactoryInner {
 /// A Vulkan fence associated with a future.
 ///
 /// For the associated future to complete:
-/// - the corresponding [`FenceFactory`] must be `poll`ed on a regular basis
+/// - the corresponding [`Factory`] must be `poll`ed on a regular basis
 /// - `submitted` must be invoked after the fence has been submitted to the Vulkan implementation
 ///
 /// # Safety
 /// The behavior is undefined if a `Fence` is dropped after the Vulkan device its factory was
 /// created from is destroyed.
 pub struct Fence {
-    inner: Arc<FenceInner>,
+    inner: Arc<Inner>,
 }
 
 impl Fence {
@@ -172,17 +172,17 @@ impl Fence {
 /// A future that completes when the associated Vulkan fence is signaled.
 ///
 /// For the associated future to complete:
-/// - the corresponding [`FenceFactory`] must be `poll`ed on a regular basis
+/// - the corresponding [`Factory`] must be `poll`ed on a regular basis
 /// - `submitted` must be invoked after the fence has been submitted to the Vulkan implementation
 ///
 /// # Safety
 /// The behavior is undefined if this future is dropped after the Vulkan device its factory was
 /// created from is destroyed.
-pub struct FenceSignaled {
-    inner: Arc<FenceInner>,
+pub struct Signaled {
+    inner: Arc<Inner>,
 }
 
-impl Future for FenceSignaled {
+impl Future for Signaled {
     type Output = ();
     fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
         let mut submitted = self.inner.submitted.lock().unwrap();
@@ -208,15 +208,15 @@ impl Future for FenceSignaled {
     }
 }
 
-struct FenceInner {
+struct Inner {
     device: Arc<ash::Device>,
-    factory: Arc<Mutex<FenceFactoryInner>>,
+    factory: Arc<Mutex<FactoryInner>>,
     submitted: Mutex<SubmitState>,
     submitted_cv: Condvar,
     handle: vk::Fence,
 }
 
-impl Drop for FenceInner {
+impl Drop for Inner {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_fence(self.handle, None);

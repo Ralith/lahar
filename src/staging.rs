@@ -9,7 +9,7 @@ use ash::{
     vk,
 };
 
-use crate::{find_memory_type, ring_alloc::RingAlloc, Fence, FenceFactory, FenceSignaled};
+use crate::{find_memory_type, ring_alloc::RingAlloc, Fence, fence};
 
 /// Staging memory allocator.
 ///
@@ -21,9 +21,9 @@ use crate::{find_memory_type, ring_alloc::RingAlloc, Fence, FenceFactory, FenceS
 ///
 /// See also [`SyncAllocator`].
 pub struct Allocator {
-    fence_factory: FenceFactory,
+    fence_factory: fence::Factory,
     buffer: Buffer,
-    alloc: RingAlloc<Shared<FenceSignaled>>,
+    alloc: RingAlloc<Shared<fence::Signaled>>,
 }
 
 impl Allocator {
@@ -31,7 +31,7 @@ impl Allocator {
         instance: &ash::Instance,
         device: Arc<ash::Device>,
         physical: vk::PhysicalDevice,
-        fence_factory: FenceFactory,
+        fence_factory: fence::Factory,
         size: usize,
     ) -> Self {
         let buffer = Buffer::new(instance, device.clone(), physical, size);
@@ -79,7 +79,7 @@ impl SyncAllocator {
         instance: &ash::Instance,
         device: Arc<ash::Device>,
         physical: vk::PhysicalDevice,
-        fence_factory: FenceFactory,
+        fence_factory: fence::Factory,
         size: usize,
     ) -> Self {
         Self {
@@ -125,7 +125,7 @@ pub struct Allocation {
     buffer: vk::Buffer,
     offset: vk::DeviceSize,
     fence: Fence,
-    freed: Shared<FenceSignaled>,
+    freed: Shared<fence::Signaled>,
     memory: *mut [u8],
 }
 
@@ -158,7 +158,7 @@ impl Allocation {
         &self.fence
     }
     /// Clonable future that completes when the memory is no longer being accessed.
-    pub fn freed(&self) -> &Shared<FenceSignaled> {
+    pub fn freed(&self) -> &Shared<fence::Signaled> {
         &self.freed
     }
 }

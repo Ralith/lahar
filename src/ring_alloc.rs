@@ -34,12 +34,6 @@ impl<T> RingAlloc<T> {
     ///
     /// # Panics
     /// - if `bytes` is larger than the space provided to the allocator
-    ///
-    /// # Safety
-    /// In addition to the usual safety rules, dereferencing the returned memory produces undefined
-    /// behavior when:
-    /// - called after a previous call returned `AllocatorFull` while other code still retains a
-    ///   reference to the memory associated with the `wait_for` metadata.
     pub fn alloc(&mut self, bytes: usize, meta: T) -> Result<&'static mut [u8], Full> {
         assert!(
             bytes <= self.size(),
@@ -115,16 +109,21 @@ mod tests {
         let mut buf = [0; 4];
         let mut ring = RingAlloc::new(&mut buf[..]);
         assert_eq!(unsafe { (*ring.alloc(4, "initial").unwrap()).len() }, 4);
-        assert_eq!(ring.alloc(4, "").unwrap_err().wait_for, "initial");
+        assert!(ring.alloc(4, "").is_err());
+        ring.free_oldest().unwrap();
         assert_eq!(unsafe { (*ring.alloc(4, "reused").unwrap()).len() }, 4);
-        assert_eq!(ring.alloc(1, "").unwrap_err().wait_for, "reused");
+        assert!(ring.alloc(1, "").is_err());
+        ring.free_oldest().unwrap();
         assert_eq!(unsafe { (*ring.alloc(2, "a").unwrap()).len() }, 2);
         assert_eq!(unsafe { (*ring.alloc(1, "b").unwrap()).len() }, 1);
-        assert_eq!(ring.alloc(3, "").unwrap_err().wait_for, "a");
-        assert_eq!(ring.alloc(3, "").unwrap_err().wait_for, "b");
+        assert!(ring.alloc(3, "").is_err());
+        ring.free_oldest().unwrap();
+        assert!(ring.alloc(3, "").is_err());
+        ring.free_oldest().unwrap();
         assert_eq!(unsafe { (*ring.alloc(3, "c").unwrap()).len() }, 3);
         assert_eq!(unsafe { (*ring.alloc(1, "d").unwrap()).len() }, 1);
-        assert_eq!(ring.alloc(1, "").unwrap_err().wait_for, "c");
+        assert!(ring.alloc(1, "").is_err());
+        ring.free_oldest().unwrap();
         assert_eq!(unsafe { (*ring.alloc(1, "e").unwrap()).len() }, 1);
     }
 }

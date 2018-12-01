@@ -4,8 +4,8 @@
 extern crate ash;
 extern crate futures;
 
-mod fence;
-pub use self::fence::{Fence, FenceFactory, FenceSignaled};
+pub mod fence;
+pub use self::fence::Fence;
 
 pub mod staging;
 
