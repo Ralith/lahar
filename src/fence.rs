@@ -1,5 +1,5 @@
-use std::mem;
 use std::future::Future;
+use std::mem;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{LocalWaker, Poll, Waker};
@@ -49,19 +49,27 @@ impl FenceFactory {
     }
 
     /// Create an unsignalled fence
-    pub fn get(&self) -> Fence {
+    pub fn get(&self) -> (Fence, FenceSignaled) {
         let handle = unsafe {
             self.device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .unwrap()
         };
-        Fence(Arc::new(FenceInner {
+        let inner = Arc::new(FenceInner {
             device: Arc::clone(&self.device),
             factory: Arc::clone(&self.inner),
             submitted: Mutex::new(SubmitState::None),
             submitted_cv: Condvar::new(),
             handle,
-        }))
+        });
+        (
+            Fence {
+                inner: inner.clone(),
+            },
+            FenceSignaled {
+                inner: inner.clone(),
+            },
+        )
     }
 
     /// Wake tasks blocked on signalled fences.
@@ -97,66 +105,102 @@ struct FenceFactoryInner {
     tasks: Vec<Waker>,
 }
 
-/// A Vulkan fence that can be waited on as a future.
+/// A Vulkan fence associated with a future.
 ///
-/// For this future to complete:
-/// - the corresponding `FutureFactory` must be `poll`ed on a regular basis
+/// For the associated future to complete:
+/// - the corresponding [`FenceFactory`] must be `poll`ed on a regular basis
 /// - `submitted` must be invoked after the fence has been submitted to the Vulkan implementation
 ///
 /// # Safety
 /// The behavior is undefined if a `Fence` is dropped after the Vulkan device its factory was
 /// created from is destroyed.
-#[derive(Clone)]
-pub struct Fence(Arc<FenceInner>);
+pub struct Fence {
+    inner: Arc<FenceInner>,
+}
 
 impl Fence {
     /// Get the Vulkan handle to register this fence to be signaled.
     pub fn handle(&self) -> vk::Fence {
-        self.0.handle
+        self.inner.handle
     }
 
     /// Declare that this fence has been submitted.
     ///
     /// This must be called after and only after the fence has been submitted to the Vulkan
-    /// implementation, such that calling on the handle `vkWaitForFences` is defined behavior.
+    /// implementation, such that calling `vkWaitForFences` on the handle is defined behavior.
     pub unsafe fn submitted(&self) {
         let old = {
-            let mut submitted = self.0.submitted.lock().unwrap();
-            let x = mem::replace(&mut *submitted, SubmitState::Ready);
-            self.0.submitted_cv.notify_one();
+            let mut submitted = self.inner.submitted.lock().unwrap();
+            let x = mem::replace(&mut *submitted, SubmitState::Done);
+            self.inner.submitted_cv.notify_one();
             x
         };
         if let SubmitState::Blocking(waker) = old {
-            let mut factory = self.0.factory.lock().unwrap();
-            factory.fences.push(self.0.handle);
+            let mut factory = self.inner.factory.lock().unwrap();
+            factory.fences.push(self.inner.handle);
             factory.tasks.push(waker);
+        }
+    }
+
+    /// Check the current status of the fence.
+    pub fn signaled(&self) -> bool {
+        if !self.inner.submitted.lock().unwrap().is_done() {
+            return false;
+        }
+        unsafe {
+            self.inner
+                .device
+                .get_fence_status(self.inner.handle)
+                .is_ok()
         }
     }
 
     /// Block the thread until the fence is signaled.
     pub fn block(&self) {
-        let mut submitted = self.0.submitted.lock().unwrap();
-        while !submitted.is_ready() {
-            submitted = self.0.submitted_cv.wait(submitted).unwrap();
+        let mut submitted = self.inner.submitted.lock().unwrap();
+        while !submitted.is_done() {
+            submitted = self.inner.submitted_cv.wait(submitted).unwrap();
         }
-        let _ = unsafe { self.0.device.wait_for_fences(&[self.0.handle], true, !0) };
+        let _ = unsafe {
+            self.inner
+                .device
+                .wait_for_fences(&[self.inner.handle], true, !0)
+        };
     }
 }
 
-impl Future for Fence {
+/// A future that completes when the associated Vulkan fence is signaled.
+///
+/// For the associated future to complete:
+/// - the corresponding [`FenceFactory`] must be `poll`ed on a regular basis
+/// - `submitted` must be invoked after the fence has been submitted to the Vulkan implementation
+///
+/// # Safety
+/// The behavior is undefined if this future is dropped after the Vulkan device its factory was
+/// created from is destroyed.
+pub struct FenceSignaled {
+    inner: Arc<FenceInner>,
+}
+
+impl Future for FenceSignaled {
     type Output = ();
     fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
-        let mut submitted = self.0.submitted.lock().unwrap();
-        if !submitted.is_ready() {
+        let mut submitted = self.inner.submitted.lock().unwrap();
+        if !submitted.is_done() {
             *submitted = SubmitState::Blocking(lw.clone().into_waker());
             Poll::Pending
         } else {
             mem::drop(submitted);
-            if unsafe { self.0.device.get_fence_status(self.0.handle).is_ok() } {
+            if unsafe {
+                self.inner
+                    .device
+                    .get_fence_status(self.inner.handle)
+                    .is_ok()
+            } {
                 Poll::Ready(())
             } else {
-                let mut factory = self.0.factory.lock().unwrap();
-                factory.fences.push(self.0.handle);
+                let mut factory = self.inner.factory.lock().unwrap();
+                factory.fences.push(self.inner.handle);
                 factory.tasks.push(lw.clone().into_waker());
                 Poll::Pending
             }
@@ -183,13 +227,13 @@ impl Drop for FenceInner {
 enum SubmitState {
     None,
     Blocking(Waker),
-    Ready,
+    Done,
 }
 
 impl SubmitState {
-    fn is_ready(&self) -> bool {
+    fn is_done(&self) -> bool {
         match *self {
-            SubmitState::Ready => true,
+            SubmitState::Done => true,
             _ => false,
         }
     }

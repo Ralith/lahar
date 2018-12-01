@@ -40,7 +40,7 @@ impl<T> RingAlloc<T> {
     /// behavior when:
     /// - called after a previous call returned `AllocatorFull` while other code still retains a
     ///   reference to the memory associated with the `wait_for` metadata.
-    pub fn alloc(&mut self, bytes: usize, meta: T) -> Result<*mut [u8], AllocFull<T>> {
+    pub fn alloc(&mut self, bytes: usize, meta: T) -> Result<&'static mut [u8], Full> {
         assert!(
             bytes <= self.size(),
             "allocation larger than allocator size"
@@ -80,11 +80,16 @@ impl<T> RingAlloc<T> {
             }
 
             // Not enough space left
-            return Err(AllocFull {
-                meta,
-                wait_for: self.used.pop_front().unwrap().1,
-            });
+            return Err(Full);
         }
+    }
+
+    pub fn oldest(&self) -> Option<&T> {
+        self.used.front().map(|x| &x.1)
+    }
+
+    pub fn free_oldest(&mut self) -> Option<T> {
+        self.used.pop_front().map(|x| x.1)
     }
 
     /// Address at which the allocator's owned memory begins.
@@ -99,12 +104,7 @@ impl<T> RingAlloc<T> {
 
 /// Error produced by a full `RingAlloc`.
 #[derive(Debug)]
-pub struct AllocFull<T> {
-    /// The metadata supplied to this call to `alloc`
-    pub meta: T,
-    /// Metadata whose allocation must become free before `alloc` is called again.
-    pub wait_for: T,
-}
+pub struct Full;
 
 #[cfg(test)]
 mod tests {

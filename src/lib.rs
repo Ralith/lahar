@@ -5,13 +5,11 @@ extern crate ash;
 extern crate futures;
 
 mod fence;
-pub use self::fence::{Fence, FenceFactory};
+pub use self::fence::{Fence, FenceFactory, FenceSignaled};
 
-mod loader;
-pub use self::loader::{Loader, AsyncContext};
+pub mod staging;
 
 mod ring_alloc;
-pub use self::ring_alloc::{AllocFull, RingAlloc};
 
 use ash::vk;
 
