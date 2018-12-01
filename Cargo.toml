@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Benjamin Saunders <ben.e.saunders@gmail.com>"]
 edition = "2018"
 description = "Tools for asynchronously uploading data to a Vulkan device"
+readme = "README.md"
 
 [dependencies]
 ash = "0.26.2"
