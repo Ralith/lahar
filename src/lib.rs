@@ -1,13 +1,11 @@
 //! Tools for asynchronously uploading data to a Vulkan device.
 #![feature(await_macro, async_await, futures_api, pin, arbitrary_self_types)]
 
-extern crate ash;
-extern crate futures;
-
 pub mod fence;
 pub use self::fence::Fence;
 
 pub mod staging;
+pub mod transfer;
 
 mod ring_alloc;
 
