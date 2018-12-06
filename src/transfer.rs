@@ -92,7 +92,7 @@ impl Context {
     ///
     /// Inserts a "release" barrier if `queue_family_index != dst_queue_family_index`. Transitions
     /// `dst` to `SHADER_READ_ONLY_OPTIMAL` layout.
-    pub unsafe async fn transfer_image(&self, mem: staging::Allocation, dst: ImageDest) {
+    pub unsafe async fn transfer_image(&self, mem: staging::Allocation, dst: ImageDst) {
         let cmd = self.alloc_cmd();
         let cmd = cmd.cmd;
         self.device.cmd_pipeline_barrier(
@@ -125,16 +125,12 @@ impl Context {
                 .buffer_offset(mem.offset())
                 .image_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
+                    mip_level: dst.mip_level,
                     base_array_layer: dst.base_layer,
                     layer_count: dst.layers,
                 })
-                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                .image_extent(vk::Extent3D {
-                    width: dst.extent.width,
-                    height: dst.extent.height,
-                    depth: 1,
-                })
+                .image_offset(dst.offset)
+                .image_extent(dst.extent)
                 .build()],
         );
         let mut barrier = vk::ImageMemoryBarrier::builder()
@@ -144,7 +140,7 @@ impl Context {
             .image(dst.image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
+                base_mip_level: dst.mip_level,
                 level_count: 1,
                 base_array_layer: dst.base_layer,
                 layer_count: dst.layers,
@@ -206,17 +202,31 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
+            let _ = self.device.queue_wait_idle(self.queue); // Ensure no cmd buffers in use
             self.device.destroy_command_pool(self.pool, None);
         }
     }
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct ImageDest {
+pub struct ImageDst {
     pub image: vk::Image,
-    pub extent: vk::Extent2D,
+    pub offset: vk::Offset3D,
+    pub extent: vk::Extent3D,
     pub base_layer: u32,
     pub layers: u32,
+    pub mip_level: u32,
+}
+
+impl Default for ImageDst {
+    fn default() -> Self { Self {
+        image: vk::Image::null(),
+        offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+        extent: vk::Extent3D { width: 0, height: 0, depth: 0 },
+        base_layer: 0,
+        layers: 1,
+        mip_level: 0,
+    }}
 }
 
 struct CmdBufferGuard<'a> {

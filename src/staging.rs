@@ -9,7 +9,7 @@ use ash::{
     vk,
 };
 
-use crate::{find_memory_type, ring_alloc::RingAlloc, Fence, fence};
+use crate::{fence, find_memory_type, ring_alloc::RingAlloc, Fence};
 
 /// Staging memory allocator.
 ///

@@ -87,12 +87,8 @@ impl Factory {
                 break;
             }
             if unsafe { self.device.get_fence_status(inner.fences[i]).is_ok() } {
-                let fence = inner.fences.swap_remove(i);
-                unsafe {
-                    self.device.destroy_fence(fence, None);
-                }
-                let task = inner.tasks.swap_remove(i);
-                task.wake();
+                inner.fences.swap_remove(i);
+                inner.tasks.swap_remove(i).wake();
             } else {
                 i += 1;
             }
@@ -218,6 +214,12 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        if self.submitted.lock().unwrap().is_done() {
+            let _ = unsafe {
+                self.device
+                    .wait_for_fences(&[self.handle], true, !0)
+            };
+        }
         unsafe {
             self.device.destroy_fence(self.handle, None);
         }
