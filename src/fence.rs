@@ -215,10 +215,7 @@ struct Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         if self.submitted.lock().unwrap().is_done() {
-            let _ = unsafe {
-                self.device
-                    .wait_for_fences(&[self.handle], true, !0)
-            };
+            let _ = unsafe { self.device.wait_for_fences(&[self.handle], true, !0) };
         }
         unsafe {
             self.device.destroy_fence(self.handle, None);

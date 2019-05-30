@@ -219,14 +219,20 @@ pub struct ImageDst {
 }
 
 impl Default for ImageDst {
-    fn default() -> Self { Self {
-        image: vk::Image::null(),
-        offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-        extent: vk::Extent3D { width: 0, height: 0, depth: 0 },
-        base_layer: 0,
-        layers: 1,
-        mip_level: 0,
-    }}
+    fn default() -> Self {
+        Self {
+            image: vk::Image::null(),
+            offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            extent: vk::Extent3D {
+                width: 0,
+                height: 0,
+                depth: 0,
+            },
+            base_layer: 0,
+            layers: 1,
+            mip_level: 0,
+        }
+    }
 }
 
 struct CmdBufferGuard<'a> {
