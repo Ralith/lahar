@@ -2,7 +2,7 @@ use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
-use std::task::{LocalWaker, Poll, Waker};
+use std::task::{Context, Poll, Waker};
 
 use ash::{version::DeviceV1_0, vk};
 
@@ -180,10 +180,10 @@ pub struct Signaled {
 
 impl Future for Signaled {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let mut submitted = self.inner.submitted.lock().unwrap();
         if !submitted.is_done() {
-            *submitted = SubmitState::Blocking(lw.clone().into_waker());
+            *submitted = SubmitState::Blocking(cx.waker().clone());
             Poll::Pending
         } else {
             mem::drop(submitted);
@@ -197,7 +197,7 @@ impl Future for Signaled {
             } else {
                 let mut factory = self.inner.factory.lock().unwrap();
                 factory.fences.push(self.inner.handle);
-                factory.tasks.push(lw.clone().into_waker());
+                factory.tasks.push(cx.waker().clone());
                 Poll::Pending
             }
         }

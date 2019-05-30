@@ -63,7 +63,7 @@ impl Allocator {
                     freed: signaled,
                 };
             }
-            await!(self.alloc.free_oldest().unwrap());
+            self.alloc.free_oldest().unwrap().await;
         }
     }
 }
@@ -94,7 +94,7 @@ impl SyncAllocator {
     }
 
     pub async fn alloc(&self, bytes: usize) -> Allocation {
-        let mut inner = await!(self.inner.lock());
+        let mut inner = self.inner.lock().await;
         let (fence, signaled) = inner.fence_factory.get();
         let signaled = signaled.shared();
         loop {
@@ -110,8 +110,8 @@ impl SyncAllocator {
             }
             let oldest = inner.alloc.oldest().unwrap().clone();
             mem::drop(inner);
-            await!(oldest);
-            inner = await!(self.inner.lock());
+            oldest.await;
+            inner = self.inner.lock().await;
             let _ = inner.alloc.free_oldest().unwrap();
         }
     }

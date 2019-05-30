@@ -85,7 +85,7 @@ impl Context {
                 &[],
             );
         }
-        self.run(cmd, mem);
+        self.run(cmd, mem).await
     }
 
     /// Copy `mem` to `dst`, freeing `mem` when finished.
@@ -159,7 +159,7 @@ impl Context {
             &[],
             &[barrier.build()],
         );
-        await!(self.run(cmd, mem));
+        self.run(cmd, mem).await;
     }
 
     unsafe fn alloc_cmd(&self) -> CmdBufferGuard {
@@ -195,7 +195,7 @@ impl Context {
             )
             .unwrap();
         mem.fence().submitted();
-        await!(mem.freed().clone());
+        mem.freed().clone().await;
     }
 }
 

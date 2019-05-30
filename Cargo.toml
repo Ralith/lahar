@@ -3,9 +3,9 @@ name = "lahar"
 version = "0.1.0"
 authors = ["Benjamin Saunders <ben.e.saunders@gmail.com>"]
 edition = "2018"
-description = "Tools for asynchronously uploading data to a Vulkan device"
+description = "Futures support for Vulkan"
 readme = "README.md"
 
 [dependencies]
-ash = "0.26.2"
-futures-preview = "0.3.0-alpha.10"
+ash = "0.29"
+futures-preview = "0.3.0-alpha.16"
