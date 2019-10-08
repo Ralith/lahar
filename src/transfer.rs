@@ -48,7 +48,7 @@ impl Context {
     /// Copy `mem` to `dst` at `dst_offset`, freeing `mem` when finished.
     ///
     /// Inserts a "release" barrier if `queue_family_index != dst_queue_family_index`.
-    pub unsafe async fn transfer_buffer(
+    pub async unsafe fn transfer_buffer(
         &self,
         mem: staging::Allocation,
         dst: vk::Buffer,
@@ -92,7 +92,7 @@ impl Context {
     ///
     /// Inserts a "release" barrier if `queue_family_index != dst_queue_family_index`. Transitions
     /// `dst` to `SHADER_READ_ONLY_OPTIMAL` layout.
-    pub unsafe async fn transfer_image(&self, mem: staging::Allocation, dst: ImageDst) {
+    pub async unsafe fn transfer_image(&self, mem: staging::Allocation, dst: ImageDst) {
         let cmd = self.alloc_cmd();
         let cmd = cmd.cmd;
         self.device.cmd_pipeline_barrier(
@@ -185,7 +185,7 @@ impl Context {
         CmdBufferGuard { ctx: self, cmd }
     }
 
-    unsafe async fn run(&self, cmd: vk::CommandBuffer, mem: staging::Allocation) {
+    async unsafe fn run(&self, cmd: vk::CommandBuffer, mem: staging::Allocation) {
         self.device.end_command_buffer(cmd).unwrap();
         self.device
             .queue_submit(

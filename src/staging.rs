@@ -45,7 +45,7 @@ impl Allocator {
         Self {
             fence_factory,
             buffer,
-            alloc: RingAlloc::new(mem),
+            alloc: unsafe { RingAlloc::new(mem) },
         }
     }
 

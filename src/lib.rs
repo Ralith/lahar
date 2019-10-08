@@ -1,5 +1,4 @@
 //! Tools for asynchronously uploading data to a Vulkan device.
-#![feature(async_await)]
 
 pub mod fence;
 pub use self::fence::Fence;

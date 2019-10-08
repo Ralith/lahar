@@ -19,7 +19,7 @@ impl<T> RingAlloc<T> {
     /// Manage `region` of memory.
     ///
     /// `region` should henceforth only be accessed through return values of `alloc`.
-    pub fn new(region: *mut [u8]) -> Self {
+    pub unsafe fn new(region: *mut [u8]) -> Self {
         Self {
             region,
             used: VecDeque::new(),

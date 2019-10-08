@@ -8,4 +8,4 @@ readme = "README.md"
 
 [dependencies]
 ash = "0.29"
-futures-preview = "0.3.0-alpha.16"
+futures-preview = "0.3.0-alpha.19"
