@@ -1,104 +1,83 @@
 use std::collections::VecDeque;
 
-/// Sub-allocates memory from a supplied region in FIFO order.
-///
-/// Calling code must manage waiting for old memory to become available using metadata associated
-/// with each allocation.
-#[derive(Debug)]
-pub struct RingAlloc<T> {
-    region: *mut [u8],
-    /// (start, metadata) per allocation, in order
-    used: VecDeque<(usize, T)>,
-    /// Offset at which unused bytes begin
+/// State tracker for a ring buffer of contiguous variable-sized allocations with random frees
+pub struct RingAlloc {
+    /// List of starting offsets, and whether they've been freed
+    allocations: VecDeque<(usize, bool)>,
+    /// Offset at which the next allocation will start
     head: usize,
+    /// Number of allocations which have been freed
+    ///
+    /// Tracking this supports random freeing by making it easy to keep track of a single element
+    /// inside `allocations` even as items are added/removed.
+    freed: u64,
 }
 
-unsafe impl<T: Send> Send for RingAlloc<T> {}
-
-impl<T> RingAlloc<T> {
-    /// Manage `region` of memory.
-    ///
-    /// `region` should henceforth only be accessed through return values of `alloc`.
-    pub unsafe fn new(region: *mut [u8]) -> Self {
-        Self {
-            region,
-            used: VecDeque::new(),
+impl RingAlloc {
+    pub fn new() -> Self {
+        RingAlloc {
+            allocations: VecDeque::new(),
             head: 0,
+            freed: 0,
         }
     }
 
-    /// Allocate `bytes`, associated with `meta`.
+    /// Returns the starting offset of a contiguous run of `size` units, or `None` if none exists.
     ///
-    /// If the allocator is full, returns the supplied metadata alongside the metadata of the oldest
-    /// allocation, which must become free before `alloc` may be called again.
-    ///
-    /// # Panics
-    /// - if `bytes` is larger than the space provided to the allocator
-    pub fn alloc(&mut self, bytes: usize, meta: T) -> Result<&'static mut [u8], Full> {
-        assert!(
-            bytes <= self.size(),
-            "allocation larger than allocator size"
-        );
-        loop {
-            if self.used.is_empty() {
-                self.head = 0;
-                self.used.push_back((0, meta));
-                self.head = bytes;
-                return Ok(unsafe { &mut (*self.region)[0..self.head] });
+    /// `capacity` is the total capacity of the ring.
+    pub fn alloc(&mut self, capacity: usize, size: usize) -> Option<(usize, Id)> {
+        let tail = if let Some(&(tail, _)) = self.allocations.front() {
+            tail
+        } else {
+            if size > capacity {
+                return None;
             }
-
-            let tail = self.used.front().unwrap().0;
-            let working_head;
-            if tail < self.head {
-                // Consider memory from head to end of buffer
-                if self.size() - self.head >= bytes {
-                    let start = self.head;
-                    self.head += bytes;
-                    self.used.push_back((start, meta));
-                    return Ok(unsafe { &mut (*self.region)[start..self.head] });
-                } else {
-                    // Not enough room towards end of buffer; wrap around to start
-                    working_head = 0;
-                }
-            } else {
-                // Free memory is contiguous from head to tail
-                working_head = self.head;
+            // No allocations, reset to initial state
+            self.allocations.push_back((0, false));
+            self.head = size;
+            self.freed = 0;
+            return Some((0, Id(0)));
+        };
+        let id = Id(self.freed.wrapping_add(self.allocations.len() as u64));
+        if self.head > tail {
+            // There's a run from the head to the end of the buffer
+            let free = capacity - self.head;
+            if free >= size {
+                let start = self.head;
+                self.allocations.push_back((start, false));
+                self.head = (start + size) % capacity;
+                return Some((start, id));
             }
-
-            // Consider memory from head to tail
-            if tail - working_head >= bytes {
-                let start = working_head;
-                self.head = working_head + bytes;
-                self.used.push_back((start, meta));
-                return Ok(unsafe { &mut (*self.region)[start..self.head] });
+            // and from the start of the buffer to the tail
+            if tail >= size {
+                self.allocations.push_back((0, false));
+                self.head = size;
+                return Some((0, id));
             }
-
-            // Not enough space left
-            return Err(Full);
+            return None;
         }
+        // Only one run, from head to tail
+        let free = tail - self.head;
+        if free >= size {
+            let start = self.head;
+            self.allocations.push_back((start, false));
+            self.head = start + size;
+            return Some((start, id));
+        }
+        None
     }
 
-    pub fn oldest(&self) -> Option<&T> {
-        self.used.front().map(|x| &x.1)
-    }
-
-    pub fn free_oldest(&mut self) -> Option<T> {
-        self.used.pop_front().map(|x| x.1)
-    }
-
-    /// Address at which the allocator's owned memory begins.
-    pub fn base(&self) -> *const u8 {
-        unsafe { (*self.region).as_ptr() }
-    }
-    /// Number of bytes managed by the allocator.
-    pub fn size(&self) -> usize {
-        unsafe { (*self.region).len() }
+    pub fn free(&mut self, id: Id) {
+        self.allocations[id.0.wrapping_sub(self.freed) as usize].1 = true;
+        while let Some(&(_, true)) = self.allocations.front() {
+            self.allocations.pop_front();
+            self.freed += 1;
+        }
     }
 }
 
-/// Error produced by a full `RingAlloc`.
-#[derive(Debug)]
-pub struct Full;
+#[derive(Debug, Copy, Clone)]
+pub struct Id(u64);
 
 #[cfg(test)]
 mod tests {
@@ -106,24 +85,24 @@ mod tests {
 
     #[test]
     fn sanity() {
-        let mut buf = [0; 4];
-        let mut ring = RingAlloc::new(&mut buf[..]);
-        assert_eq!(unsafe { (*ring.alloc(4, "initial").unwrap()).len() }, 4);
-        assert!(ring.alloc(4, "").is_err());
-        ring.free_oldest().unwrap();
-        assert_eq!(unsafe { (*ring.alloc(4, "reused").unwrap()).len() }, 4);
-        assert!(ring.alloc(1, "").is_err());
-        ring.free_oldest().unwrap();
-        assert_eq!(unsafe { (*ring.alloc(2, "a").unwrap()).len() }, 2);
-        assert_eq!(unsafe { (*ring.alloc(1, "b").unwrap()).len() }, 1);
-        assert!(ring.alloc(3, "").is_err());
-        ring.free_oldest().unwrap();
-        assert!(ring.alloc(3, "").is_err());
-        ring.free_oldest().unwrap();
-        assert_eq!(unsafe { (*ring.alloc(3, "c").unwrap()).len() }, 3);
-        assert_eq!(unsafe { (*ring.alloc(1, "d").unwrap()).len() }, 1);
-        assert!(ring.alloc(1, "").is_err());
-        ring.free_oldest().unwrap();
-        assert_eq!(unsafe { (*ring.alloc(1, "e").unwrap()).len() }, 1);
+        let mut r = RingAlloc::new();
+        const CAP: usize = 4;
+        let a = r.alloc(CAP, 3).unwrap();
+        assert!(r.alloc(CAP, 2).is_none());
+        let b = r.alloc(CAP, 1).unwrap();
+        assert_eq!(b.0, 3);
+        assert!(r.alloc(CAP, 1).is_none());
+        r.free(a.1);
+        let c = r.alloc(CAP, 1).unwrap();
+        assert_eq!(c.0, 0);
+        let d = r.alloc(CAP, 2).unwrap();
+        assert_eq!(d.0, 1);
+        assert!(r.alloc(CAP, 1).is_none());
+        r.free(c.1);
+        r.free(b.1);
+        let e = r.alloc(CAP, 1).unwrap();
+        assert_eq!(e.0, 3);
+        let f = r.alloc(CAP, 1).unwrap();
+        assert_eq!(f.0, 0);
     }
 }

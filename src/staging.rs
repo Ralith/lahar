@@ -1,228 +1,136 @@
+use std::future::Future;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-use std::{mem, slice};
+use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
-use futures::{future::Shared, lock::Mutex, FutureExt};
+use ash::{vk, Device};
+use futures_util::future;
 
-use ash::{
-    version::{DeviceV1_0, InstanceV1_0},
-    vk,
-};
+use crate::condition::{self, Condition};
+use crate::ring_alloc::{self, RingAlloc};
+use crate::DedicatedMapping;
 
-use crate::{fence, find_memory_type, ring_alloc::RingAlloc, Fence};
-
-/// Staging memory allocator.
+/// A host-visible circular buffer for short-lived allocations
 ///
-/// Staging memory is host memory that can be both directly written to by the CPU and transferred
-/// from by the Vulkan device.
-///
-/// Each allocation is associated with a [`Fence`], which must be signaled to free the associated
-/// memory.
-///
-/// See also [`SyncAllocator`].
-pub struct Allocator {
-    fence_factory: fence::Factory,
-    buffer: Buffer,
-    alloc: RingAlloc<Shared<fence::Signaled>>,
+/// Best for transient uses like streaming transfers. Retaining an allocation of any size will block
+/// future allocations once the buffer wraps back aground.
+pub struct StagingBuffer {
+    device: Arc<Device>,
+    buffer: DedicatedMapping<[u8]>,
+    state: Mutex<State>,
 }
 
-impl Allocator {
-    pub fn new(
-        instance: &ash::Instance,
-        device: Arc<ash::Device>,
-        physical: vk::PhysicalDevice,
-        fence_factory: fence::Factory,
-        size: usize,
-    ) -> Self {
-        let buffer = Buffer::new(instance, device.clone(), physical, size);
-        let mem = unsafe {
-            let x = device
-                .map_memory(buffer.memory, 0, vk::WHOLE_SIZE, Default::default())
-                .unwrap();
-            slice::from_raw_parts_mut(x as *mut _, size)
-        };
+struct State {
+    alloc: RingAlloc,
+    free: Condition,
+}
 
+impl StagingBuffer {
+    pub fn new(
+        device: Arc<Device>,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        capacity: usize,
+    ) -> Self {
+        let buffer = DedicatedMapping::zeroed_bytes(
+            &*device,
+            props,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            capacity,
+        );
         Self {
-            fence_factory,
+            device,
             buffer,
-            alloc: unsafe { RingAlloc::new(mem) },
+            state: Mutex::new(State {
+                alloc: RingAlloc::new(),
+                free: Condition::new(),
+            }),
         }
     }
 
-    pub async fn alloc(&mut self, bytes: usize) -> Allocation {
-        let (fence, signaled) = self.fence_factory.get();
-        let signaled = signaled.shared();
-        loop {
-            if let Ok(memory) = self.alloc.alloc(bytes, signaled.clone()) {
-                return Allocation {
-                    buffer: self.buffer.handle,
-                    offset: (memory.as_ptr() as usize - self.alloc.base() as usize)
-                        as vk::DeviceSize,
-                    memory,
-                    fence,
-                    freed: signaled,
-                };
+    /// Largest possible allocation
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Completes when sufficient space is available
+    ///
+    /// Yields `None` if `size > self.capacity()`. No fairness guarantees, i.e. small allocations
+    /// may starve large ones.
+    pub fn alloc(&self, size: usize) -> impl Future<Output = Option<Alloc<'_>>> {
+        let mut cond_state = condition::State::default();
+        future::poll_fn(move |cx| {
+            if size > self.capacity() {
+                return Poll::Ready(None);
             }
-            self.alloc.free_oldest().unwrap().await;
-        }
-    }
-}
-
-/// Like [`Allocator`], but thread-safe.
-pub struct SyncAllocator {
-    // Naive implementation. Future work: thread-local fast-path
-    inner: Mutex<Allocator>,
-}
-
-impl SyncAllocator {
-    pub fn new(
-        instance: &ash::Instance,
-        device: Arc<ash::Device>,
-        physical: vk::PhysicalDevice,
-        fence_factory: fence::Factory,
-        size: usize,
-    ) -> Self {
-        Self {
-            inner: Mutex::new(Allocator::new(
-                instance,
-                device,
-                physical,
-                fence_factory,
-                size,
-            )),
-        }
-    }
-
-    pub async fn alloc(&self, bytes: usize) -> Allocation {
-        let mut inner = self.inner.lock().await;
-        let (fence, signaled) = inner.fence_factory.get();
-        let signaled = signaled.shared();
-        loop {
-            if let Ok(memory) = inner.alloc.alloc(bytes, signaled.clone()) {
-                return Allocation {
-                    buffer: inner.buffer.handle,
-                    offset: (memory.as_ptr() as usize - inner.alloc.base() as usize)
-                        as vk::DeviceSize,
-                    memory,
-                    fence,
-                    freed: signaled,
-                };
+            let mut state = self.state.lock().unwrap();
+            match state.alloc.alloc(self.capacity(), size) {
+                None => {
+                    state.free.register(cx, &mut cond_state);
+                    Poll::Pending
+                }
+                Some((offset, id)) => Poll::Ready(Some(Alloc {
+                    buf: self,
+                    bytes: unsafe {
+                        std::slice::from_raw_parts_mut(
+                            (self.buffer.as_ptr() as *const u8).add(offset) as *mut u8,
+                            size,
+                        )
+                    },
+                    id,
+                })),
             }
-            let oldest = inner.alloc.oldest().unwrap().clone();
-            mem::drop(inner);
-            oldest.await;
-            inner = self.inner.lock().await;
-            let _ = inner.alloc.free_oldest().unwrap();
-        }
+        })
+    }
+
+    fn free(&self, id: ring_alloc::Id) {
+        let mut state = self.state.lock().unwrap();
+        state.alloc.free(id);
+        state.free.notify();
     }
 }
 
-/// Vulkan-visible host memory returned by an [`Allocator`].
-///
-/// # Safety
-/// The behavior is undefined if memory is accessed after the [`Allocator`] is dropped.
-pub struct Allocation {
-    buffer: vk::Buffer,
-    offset: vk::DeviceSize,
-    fence: Fence,
-    freed: Shared<fence::Signaled>,
-    memory: *mut [u8],
-}
-
-unsafe impl Send for Allocation {}
-
-impl Deref for Allocation {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        unsafe { &*self.memory }
-    }
-}
-
-impl DerefMut for Allocation {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe { &mut *self.memory }
-    }
-}
-
-impl Allocation {
-    /// The Vulkan buffer associated with this memory.
-    pub fn buffer(&self) -> vk::Buffer {
-        self.buffer
-    }
-    /// Offset of this memory within the buffer.
-    pub fn offset(&self) -> vk::DeviceSize {
-        self.offset
-    }
-    /// The [`Fence`] that must be signaled to free the allocation.
-    pub fn fence(&self) -> &Fence {
-        &self.fence
-    }
-    /// Clonable future that completes when the memory is no longer being accessed.
-    pub fn freed(&self) -> &Shared<fence::Signaled> {
-        &self.freed
-    }
-}
-
-struct Buffer {
-    device: Arc<ash::Device>,
-    memory: vk::DeviceMemory,
-    handle: vk::Buffer,
-}
-
-impl Buffer {
-    fn new(
-        instance: &ash::Instance,
-        device: Arc<ash::Device>,
-        physical: vk::PhysicalDevice,
-        size: usize,
-    ) -> Self {
-        unsafe {
-            let device_props = instance.get_physical_device_memory_properties(physical);
-            let handle = device
-                .create_buffer(
-                    &vk::BufferCreateInfo::builder()
-                        .size(size as vk::DeviceSize)
-                        .usage(vk::BufferUsageFlags::TRANSFER_SRC),
-                    None,
-                )
-                .unwrap();
-            let reqs = device.get_buffer_memory_requirements(handle);
-            let ty = find_memory_type(
-                &device_props,
-                reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )
-            .unwrap();
-
-            let dedicated_info = vk::MemoryDedicatedAllocateInfo::builder()
-                .buffer(handle)
-                .build();
-            let memory_info = vk::MemoryAllocateInfo {
-                p_next: &dedicated_info as *const _ as *const _,
-                ..vk::MemoryAllocateInfo::builder()
-                    .allocation_size(reqs.size)
-                    .memory_type_index(ty)
-                    .build()
-            };
-            let memory = device.allocate_memory(&memory_info, None).unwrap();
-            device.bind_buffer_memory(handle, memory, 0).unwrap();
-
-            Self {
-                device,
-                memory,
-                handle,
-            }
-        }
-    }
-}
-
-unsafe impl Send for Buffer {}
-
-impl Drop for Buffer {
+impl Drop for StagingBuffer {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_buffer(self.handle, None);
-            self.device.free_memory(self.memory, None);
+            self.buffer.destroy(&*self.device);
         }
+    }
+}
+
+/// An allocation from a `StagingBuffer`
+pub struct Alloc<'a> {
+    buf: &'a StagingBuffer,
+    bytes: &'a mut [u8],
+    id: ring_alloc::Id,
+}
+
+impl Alloc<'_> {
+    pub fn offset(&self) -> vk::DeviceSize {
+        self.bytes.as_ptr() as vk::DeviceSize
+            - self.buf.buffer.as_ptr() as *const u8 as vk::DeviceSize
+    }
+
+    pub fn size(&self) -> vk::DeviceSize {
+        self.bytes.len() as _
+    }
+}
+
+impl Deref for Alloc<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl DerefMut for Alloc<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.bytes
+    }
+}
+
+impl Drop for Alloc<'_> {
+    fn drop(&mut self) {
+        self.buf.free(self.id);
     }
 }

@@ -1,251 +1,386 @@
-use std::marker::PhantomData;
+use std::convert::TryFrom;
+use std::future::Future;
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
-use ash::{self, version::DeviceV1_0, vk};
+use ash::version::DeviceV1_0;
+use ash::vk;
+use futures_channel::oneshot;
+use futures_util::FutureExt;
 
-use crate::staging;
-
-/// Helper for transferring staged memory.
-pub struct Context {
-    device: Arc<ash::Device>,
-    pool: vk::CommandPool,
-    queue: vk::Queue,
-    queue_family_index: u32,
-    dst_queue_family_index: u32,
-    _not_sync: PhantomData<*mut ()>,
+#[derive(Clone)]
+pub struct TransferHandle {
+    send: mpsc::Sender<Message>,
 }
 
-unsafe impl Send for Context {}
-
-impl Context {
-    /// Create a context for transferring memory using `queue` from `queue_family_index`, for future
-    /// use on `dst_queue_family_index`.
-    pub fn new(
-        device: Arc<ash::Device>,
-        queue: vk::Queue,
-        queue_family_index: u32,
-        dst_queue_family_index: u32,
-    ) -> Self {
-        let pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::builder()
-                    .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-                    .queue_family_index(queue_family_index),
-                None,
-            )
-        }
-        .unwrap();
-        Self {
-            device,
-            pool,
-            queue,
-            queue_family_index,
-            dst_queue_family_index,
-            _not_sync: PhantomData,
-        }
-    }
-
-    /// Copy `mem` to `dst` at `dst_offset`, freeing `mem` when finished.
-    ///
-    /// Inserts a "release" barrier if `queue_family_index != dst_queue_family_index`.
-    pub async unsafe fn transfer_buffer(
+impl TransferHandle {
+    pub unsafe fn upload_buffer(
         &self,
-        mem: staging::Allocation,
+        src: vk::Buffer,
         dst: vk::Buffer,
-        dst_offset: vk::DeviceSize,
-    ) {
-        let cmd = self.alloc_cmd();
-        let cmd = cmd.cmd;
-        self.device.cmd_copy_buffer(
-            cmd,
-            mem.buffer(),
-            dst,
-            &[vk::BufferCopy {
-                size: mem.len() as vk::DeviceSize,
-                src_offset: mem.offset(),
-                dst_offset,
-            }],
-        );
-        if self.queue_family_index != self.dst_queue_family_index {
-            self.device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[vk::BufferMemoryBarrier::builder()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::empty())
-                    .src_queue_family_index(self.queue_family_index)
-                    .dst_queue_family_index(self.dst_queue_family_index)
-                    .buffer(dst)
-                    .offset(dst_offset)
-                    .size(mem.len() as vk::DeviceSize)
-                    .build()],
-                &[],
-            );
-        }
-        self.run(cmd, mem).await
+        region: vk::BufferCopy,
+    ) -> impl Future<Output = Result<(), ShutDown>> {
+        let (sender, recv) = oneshot::channel();
+        self.send
+            .send(Message {
+                sender,
+                op: Op::UploadBuffer { src, dst, region },
+            })
+            .unwrap();
+        recv.map(|x| x.map_err(|_| ShutDown))
     }
 
-    /// Copy `mem` to `dst`, freeing `mem` when finished.
-    ///
-    /// Inserts a "release" barrier if `queue_family_index != dst_queue_family_index`. Transitions
-    /// `dst` to `SHADER_READ_ONLY_OPTIMAL` layout.
-    pub async unsafe fn transfer_image(&self, mem: staging::Allocation, dst: ImageDst) {
-        let cmd = self.alloc_cmd();
-        let cmd = cmd.cmd;
-        self.device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[vk::ImageMemoryBarrier::builder()
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .image(dst.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: dst.base_layer,
-                    layer_count: dst.layers,
-                })
-                .build()],
-        );
-        self.device.cmd_copy_buffer_to_image(
-            cmd,
-            mem.buffer(),
-            dst.image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[vk::BufferImageCopy::builder()
-                .buffer_offset(mem.offset())
-                .image_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: dst.mip_level,
-                    base_array_layer: dst.base_layer,
-                    layer_count: dst.layers,
-                })
-                .image_offset(dst.offset)
-                .image_extent(dst.extent)
-                .build()],
-        );
-        let mut barrier = vk::ImageMemoryBarrier::builder()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image(dst.image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: dst.mip_level,
-                level_count: 1,
-                base_array_layer: dst.base_layer,
-                layer_count: dst.layers,
-            });
-        if self.queue_family_index != self.dst_queue_family_index {
-            barrier = barrier
-                .src_queue_family_index(self.queue_family_index)
-                .dst_queue_family_index(self.dst_queue_family_index);
-        }
-        self.device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            Default::default(),
-            &[],
-            &[],
-            &[barrier.build()],
-        );
-        self.run(cmd, mem).await;
+    /// `dst` must be in TRANSFER_DST_OPTIMAL
+    pub unsafe fn upload_image(
+        &self,
+        src: vk::Buffer,
+        dst: vk::Image,
+        region: vk::BufferImageCopy,
+    ) -> impl Future<Output = Result<(), ShutDown>> {
+        let (sender, recv) = oneshot::channel();
+        self.send
+            .send(Message {
+                sender,
+                op: Op::UploadImage { src, dst, region },
+            })
+            .unwrap();
+        recv.map(|x| x.map_err(|_| ShutDown))
     }
 
-    unsafe fn alloc_cmd(&self) -> CmdBufferGuard {
-        let cmd = self
-            .device
-            .allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::builder()
-                    .command_pool(self.pool)
-                    .level(vk::CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1),
-            )
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        self.device
-            .begin_command_buffer(
-                cmd,
-                &vk::CommandBufferBeginInfo::builder()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )
-            .unwrap();
-        CmdBufferGuard { ctx: self, cmd }
-    }
-
-    async unsafe fn run(&self, cmd: vk::CommandBuffer, mem: staging::Allocation) {
-        self.device.end_command_buffer(cmd).unwrap();
-        self.device
-            .queue_submit(
-                self.queue,
-                &[vk::SubmitInfo::builder().command_buffers(&[cmd]).build()],
-                mem.fence().handle(),
-            )
-            .unwrap();
-        mem.fence().submitted();
-        mem.freed().clone().await;
-    }
+    // Extensible with practically any conceivable transfer command
 }
 
-impl Drop for Context {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self.device.queue_wait_idle(self.queue); // Ensure no cmd buffers in use
-            self.device.destroy_command_pool(self.pool, None);
-        }
-    }
+pub fn acquire_buffer(
+    src_queue_family: u32,
+    dst_queue_family: u32,
+    buffer: vk::Buffer,
+    offset: vk::DeviceSize,
+    size: vk::DeviceSize,
+) -> vk::BufferMemoryBarrier {
+    vk::BufferMemoryBarrier::builder()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .src_queue_family_index(src_queue_family)
+        .dst_queue_family_index(dst_queue_family)
+        .buffer(buffer)
+        .offset(offset)
+        .size(size)
+        .build()
+}
+
+pub fn acquire_image(
+    src_queue_family: u32,
+    dst_queue_family: u32,
+    image: vk::Image,
+) -> vk::ImageMemoryBarrier {
+    vk::ImageMemoryBarrier::builder()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .src_queue_family_index(src_queue_family)
+        .dst_queue_family_index(dst_queue_family)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image(image)
+        .build()
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct ImageDst {
-    pub image: vk::Image,
-    pub offset: vk::Offset3D,
-    pub extent: vk::Extent3D,
-    pub base_layer: u32,
-    pub layers: u32,
-    pub mip_level: u32,
+pub struct ShutDown;
+
+struct Message {
+    sender: oneshot::Sender<()>,
+    op: Op,
 }
 
-impl Default for ImageDst {
-    fn default() -> Self {
-        Self {
-            image: vk::Image::null(),
-            offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-            extent: vk::Extent3D {
-                width: 0,
-                height: 0,
-                depth: 0,
+enum Op {
+    UploadBuffer {
+        src: vk::Buffer,
+        dst: vk::Buffer,
+        region: vk::BufferCopy,
+    },
+    UploadImage {
+        src: vk::Buffer,
+        dst: vk::Image,
+        region: vk::BufferImageCopy,
+    },
+}
+
+pub struct Reactor {
+    device: Arc<ash::Device>,
+    queue_family: u32,
+    queue: vk::Queue,
+    /// == queue_family if `None` was supplied on construction
+    dst_queue_family: u32, // switch to Option<u32> if we end up needing to branch anyway
+    spare_fences: Vec<vk::Fence>,
+    spare_cmds: Vec<vk::CommandBuffer>,
+    in_flight: Vec<Batch>,
+    /// Fences for in-flight transfer operations; directly corresponds to in_flight entries
+    in_flight_fences: Vec<vk::Fence>,
+    cmd_pool: vk::CommandPool,
+    pending: Option<Batch>,
+    buffer_barriers: Vec<vk::BufferMemoryBarrier>,
+    image_barriers: Vec<vk::ImageMemoryBarrier>,
+    recv: mpsc::Receiver<Message>,
+}
+
+impl Reactor {
+    /// Safety: valid use use of queue_family, queue
+    pub unsafe fn new(
+        device: Arc<ash::Device>,
+        queue_family: u32,
+        queue: vk::Queue,
+        dst_queue_family: Option<u32>,
+    ) -> (TransferHandle, Self) {
+        let (send, recv) = mpsc::channel();
+        let cmd_pool = device
+            .create_command_pool(
+                &vk::CommandPoolCreateInfo::builder()
+                    .queue_family_index(queue_family)
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                None,
+            )
+            .unwrap();
+        (
+            TransferHandle { send },
+            Self {
+                device,
+                queue_family,
+                queue,
+                dst_queue_family: dst_queue_family.unwrap_or(queue_family),
+                spare_fences: Vec::new(),
+                spare_cmds: Vec::new(),
+                in_flight: Vec::new(),
+                in_flight_fences: Vec::new(),
+                cmd_pool,
+                pending: None,
+                buffer_barriers: Vec::new(),
+                image_barriers: Vec::new(),
+                recv,
             },
-            base_layer: 0,
-            layers: 1,
-            mip_level: 0,
+        )
+    }
+
+    pub unsafe fn spawn(
+        device: Arc<ash::Device>,
+        queue_family: u32,
+        queue: vk::Queue,
+        dst_queue_family: Option<u32>,
+    ) -> (TransferHandle, thread::JoinHandle<()>) {
+        let (transfer, mut core) = Self::new(device, queue_family, queue, dst_queue_family);
+        let thread = thread::spawn(
+            move || {
+                while core.run_for(Duration::from_millis(250)).is_ok() {}
+            },
+        );
+        (transfer, thread)
+    }
+
+    pub fn run_for(&mut self, timeout: Duration) -> Result<(), Disconnected> {
+        self.queue()?;
+        self.flush();
+
+        if self.in_flight.is_empty() {
+            thread::sleep(timeout);
+            return Ok(());
+        }
+
+        // We could move this to a background thread and continue to submit new work while it's
+        // waiting, but we want to batch up operations a bit anyway.
+        let result = unsafe {
+            self.device.wait_for_fences(
+                &self.in_flight_fences,
+                false,
+                u64::try_from(timeout.as_nanos()).unwrap_or(u64::max_value()),
+            )
+        };
+        match result {
+            Err(vk::Result::TIMEOUT) => return Ok(()),
+            Err(e) => panic!("{}", e),
+            Ok(()) => {}
+        }
+        for i in 0..self.in_flight.len() {
+            unsafe {
+                if self
+                    .device
+                    .get_fence_status(self.in_flight_fences[i])
+                    .is_ok()
+                {
+                    let fence = self.in_flight_fences.swap_remove(i);
+                    self.device.reset_fences(&[fence]).unwrap();
+                    self.spare_fences.push(fence);
+                    let batch = self.in_flight.swap_remove(i);
+                    for sender in batch.senders {
+                        let _ = sender.send(());
+                    }
+                    self.spare_cmds.push(batch.cmd);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn queue(&mut self) -> Result<(), Disconnected> {
+        loop {
+            match self.recv.try_recv() {
+                Ok(Message { sender, op }) => {
+                    let cmd = self.prepare(sender);
+                    self.queue_op(cmd, op);
+                }
+                Err(mpsc::TryRecvError::Empty) => return Err(Disconnected),
+                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            }
         }
     }
-}
 
-struct CmdBufferGuard<'a> {
-    ctx: &'a Context,
-    cmd: vk::CommandBuffer,
-}
+    fn queue_op(&mut self, cmd: vk::CommandBuffer, op: Op) {
+        use Op::*;
+        match op {
+            UploadBuffer { src, dst, region } => unsafe {
+                self.device.cmd_copy_buffer(cmd, src, dst, &[region]);
+                self.buffer_barriers.push(
+                    vk::BufferMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                        .src_queue_family_index(self.queue_family)
+                        .dst_queue_family_index(self.dst_queue_family)
+                        .buffer(dst)
+                        .offset(region.dst_offset)
+                        .size(region.size)
+                        .build(),
+                );
+            },
+            UploadImage { src, dst, region } => unsafe {
+                self.device.cmd_copy_buffer_to_image(
+                    cmd,
+                    src,
+                    dst,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[region],
+                );
+                self.image_barriers.push(
+                    vk::ImageMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                        .src_queue_family_index(self.queue_family)
+                        .dst_queue_family_index(self.dst_queue_family)
+                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .image(dst)
+                        .build(),
+                );
+            },
+        }
+    }
 
-impl<'a> Drop for CmdBufferGuard<'a> {
-    fn drop(&mut self) {
+    fn prepare(&mut self, send: oneshot::Sender<()>) -> vk::CommandBuffer {
+        if let Some(ref mut pending) = self.pending {
+            pending.senders.push(send);
+            return pending.cmd;
+        }
+        let cmd = if let Some(cmd) = self.spare_cmds.pop() {
+            cmd
+        } else {
+            unsafe {
+                self.device
+                    .allocate_command_buffers(
+                        &vk::CommandBufferAllocateInfo::builder()
+                            .command_pool(self.cmd_pool)
+                            .command_buffer_count(1),
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .next()
+                    .unwrap()
+            }
+        };
         unsafe {
-            self.ctx
-                .device
-                .free_command_buffers(self.ctx.pool, &[self.cmd]);
+            self.device
+                .begin_command_buffer(
+                    cmd,
+                    &vk::CommandBufferBeginInfo::builder()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .unwrap();
+        }
+        self.pending = Some(Batch {
+            cmd,
+            senders: vec![send],
+        });
+        cmd
+    }
+
+    /// Submit queued operations
+    fn flush(&mut self) {
+        let pending = match self.pending.take() {
+            Some(x) => x,
+            None => return,
+        };
+        let fence = if let Some(fence) = self.spare_fences.pop() {
+            fence
+        } else {
+            unsafe {
+                self.device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+                    .unwrap()
+            }
+        };
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                pending.cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::default(),
+                &[],
+                &self.buffer_barriers,
+                &self.image_barriers,
+            );
+            self.device.end_command_buffer(pending.cmd).unwrap();
+            self.device
+                .queue_submit(
+                    self.queue,
+                    &[vk::SubmitInfo::builder()
+                        .command_buffers(&[pending.cmd])
+                        .build()],
+                    fence,
+                )
+                .unwrap();
+        }
+        self.buffer_barriers.clear();
+        self.image_barriers.clear();
+        self.in_flight.push(pending);
+        self.in_flight_fences.push(fence);
+    }
+}
+
+impl Drop for Reactor {
+    fn drop(&mut self) {
+        if self.in_flight.is_empty() {
+            return;
+        }
+        unsafe {
+            self.device
+                .wait_for_fences(&self.in_flight_fences, true, u64::max_value())
+                .unwrap();
+            for fence in self.spare_fences.drain(..) {
+                self.device.destroy_fence(fence, None);
+            }
+            for fence in self.in_flight_fences.drain(..) {
+                self.device.destroy_fence(fence, None);
+            }
+            self.device.destroy_command_pool(self.cmd_pool, None);
         }
     }
 }
+
+unsafe impl Send for Reactor {}
+
+struct Batch {
+    cmd: vk::CommandBuffer,
+    // Future work: efficient broadcast future
+    senders: Vec<oneshot::Sender<()>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Disconnected;
