@@ -7,7 +7,7 @@ use std::ptr::{self, NonNull};
 use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
-/// Helper for copying a single fixed-size host-written datum to GPU memory
+/// Helper for repeatedly copying fixed-size data into the same GPU buffer
 pub struct Staged<T: Copy> {
     // Future work: Only allocate two buffers if non-host-visible memory exists
     buffer: DedicatedBuffer,
@@ -242,6 +242,8 @@ impl<T: ?Sized> DedicatedMapping<T> {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
+        // Just in case someone's doing something *super* weird.
+        ptr::drop_in_place(self.as_ptr() as *mut T);
         self.buffer.destroy(device);
     }
 }
