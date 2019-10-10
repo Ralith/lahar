@@ -1,7 +1,7 @@
 //! Primitive synchronous allocation helpers
 
 use std::mem::{self, MaybeUninit};
-use std::ops::{Deref, DerefMut};
+use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::ptr::{self, NonNull};
 
 use ash::version::DeviceV1_0;
@@ -33,7 +33,7 @@ impl<T: Copy> Staged<T> {
         Self { buffer, staging }
     }
 
-    pub fn write(&mut self, device: &ash::Device, x: T) {
+    pub fn write(&mut self, device: &Device, x: T) {
         unsafe {
             ptr::write(self.staging.as_mut_ptr(), x);
             device
@@ -46,7 +46,7 @@ impl<T: Copy> Staged<T> {
         }
     }
 
-    pub unsafe fn record_transfer(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
+    pub unsafe fn record_transfer(&self, device: &Device, cmd: vk::CommandBuffer) {
         device.cmd_copy_buffer(
             cmd,
             self.staging.buffer(),
@@ -63,7 +63,7 @@ impl<T: Copy> Staged<T> {
         self.buffer.handle
     }
 
-    pub unsafe fn destroy(&mut self, device: &ash::Device) {
+    pub unsafe fn destroy(&mut self, device: &Device) {
         self.buffer.destroy(device);
         self.staging.destroy(device);
     }
@@ -75,7 +75,7 @@ pub struct DedicatedMapping<T: ?Sized> {
     ptr: NonNull<T>,
 }
 
-impl<T: Copy> DedicatedMapping<T> {
+impl<T> DedicatedMapping<T> {
     pub fn new(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
@@ -88,9 +88,29 @@ impl<T: Copy> DedicatedMapping<T> {
             x.assume_init()
         }
     }
+
+    pub unsafe fn zeroed(
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        usage: vk::BufferUsageFlags,
+    ) -> Self {
+        Self::new(device, props, usage, mem::zeroed())
+    }
+
+    pub fn flush(&self, device: &Device) {
+        unsafe {
+            device
+                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
+                    .memory(self.memory())
+                    .offset(0)
+                    .size(vk::WHOLE_SIZE)
+                    .build()])
+                .unwrap();
+        }
+    }
 }
 
-impl<T: Copy> DedicatedMapping<[T]> {
+impl<T> DedicatedMapping<[T]> {
     pub fn from_iter<I>(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
@@ -125,11 +145,50 @@ impl<T: Copy> DedicatedMapping<[T]> {
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         values: &[T],
-    ) -> Self {
+    ) -> Self
+    where
+        T: Copy,
+    {
         let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
         unsafe {
             ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
             x.assume_init_array()
+        }
+    }
+
+    pub unsafe fn zeroed_array(
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        usage: vk::BufferUsageFlags,
+        size: usize,
+    ) -> Self {
+        let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
+        for elt in &mut *x {
+            ptr::write(elt.as_mut_ptr(), mem::zeroed());
+        }
+        x.assume_init_array()
+    }
+
+    pub fn flush_range(&self, device: &Device, range: impl RangeBounds<usize>) {
+        use Bound::*;
+        let offset = match range.start_bound() {
+            Included(&x) => x as vk::DeviceSize,
+            Excluded(&x) => x as vk::DeviceSize + 1,
+            Unbounded => 0,
+        };
+        let size = match range.end_bound() {
+            Included(&x) => x as vk::DeviceSize - offset + 1,
+            Excluded(&x) => x as vk::DeviceSize - offset,
+            Unbounded => vk::WHOLE_SIZE,
+        };
+        unsafe {
+            device
+                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
+                    .memory(self.memory())
+                    .offset(offset)
+                    .size(size)
+                    .build()])
+                .unwrap();
         }
     }
 }
@@ -211,23 +270,6 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
     }
 }
 
-impl DedicatedMapping<[u8]> {
-    pub fn zeroed_bytes(
-        device: &Device,
-        props: &vk::PhysicalDeviceMemoryProperties,
-        usage: vk::BufferUsageFlags,
-        size: usize,
-    ) -> Self {
-        let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
-        unsafe {
-            for i in 0..size {
-                ptr::write(x[i].as_mut_ptr(), 0);
-            }
-            x.assume_init_array()
-        }
-    }
-}
-
 impl<T: ?Sized> DedicatedMapping<T> {
     pub fn as_ptr(&self) -> *const T {
         self.ptr.as_ptr()
@@ -242,7 +284,6 @@ impl<T: ?Sized> DedicatedMapping<T> {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        // Just in case someone's doing something *super* weird.
         ptr::drop_in_place(self.as_ptr() as *mut T);
         self.buffer.destroy(device);
     }

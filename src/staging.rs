@@ -31,12 +31,14 @@ impl StagingBuffer {
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: usize,
     ) -> Self {
-        let buffer = DedicatedMapping::zeroed_bytes(
-            &*device,
-            props,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            capacity,
-        );
+        let buffer = unsafe {
+            DedicatedMapping::zeroed_array(
+                &*device,
+                props,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                capacity,
+            )
+        };
         Self {
             device,
             buffer,
@@ -45,6 +47,10 @@ impl StagingBuffer {
                 free: Condition::new(),
             }),
         }
+    }
+
+    pub fn buffer(&self) -> vk::Buffer {
+        self.buffer.buffer()
     }
 
     /// Largest possible allocation
@@ -112,6 +118,13 @@ impl Alloc<'_> {
 
     pub fn size(&self) -> vk::DeviceSize {
         self.bytes.len() as _
+    }
+
+    pub fn flush(&self) {
+        self.buf.buffer.flush_range(
+            &self.buf.device,
+            self.offset() as usize..(self.offset() + self.size()) as usize,
+        );
     }
 }
 
