@@ -15,7 +15,7 @@ pub struct Staged<T: Copy> {
 }
 
 impl<T: Copy> Staged<T> {
-    pub fn new(
+    pub unsafe fn new(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
@@ -33,17 +33,15 @@ impl<T: Copy> Staged<T> {
         Self { buffer, staging }
     }
 
-    pub fn write(&mut self, device: &Device, x: T) {
-        unsafe {
-            ptr::write(self.staging.as_mut_ptr(), x);
-            device
-                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                    .memory(self.staging.memory())
-                    .offset(0)
-                    .size(vk::WHOLE_SIZE)
-                    .build()])
-                .unwrap();
-        }
+    pub unsafe fn write(&mut self, device: &Device, x: T) {
+        ptr::write(self.staging.as_mut_ptr(), x);
+        device
+            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
+                .memory(self.staging.memory())
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .build()])
+            .unwrap();
     }
 
     pub unsafe fn record_transfer(&self, device: &Device, cmd: vk::CommandBuffer) {
@@ -76,17 +74,21 @@ pub struct DedicatedMapping<T: ?Sized> {
 }
 
 impl<T> DedicatedMapping<T> {
-    pub fn new(
+    /// Create a mapped buffer
+    ///
+    /// # Safety
+    ///
+    /// `props` must be from `device`, and `T`'s alignment must not be greater than the physical
+    /// device's `minMemoryMapAlignment`.
+    pub unsafe fn new(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         value: T,
     ) -> Self {
         let mut x = DedicatedMapping::uninit(device, props, usage);
-        unsafe {
-            ptr::write(x.as_mut_ptr(), value);
-            x.assume_init()
-        }
+        ptr::write(x.as_mut_ptr(), value);
+        x.assume_init()
     }
 
     pub unsafe fn zeroed(
@@ -97,21 +99,19 @@ impl<T> DedicatedMapping<T> {
         Self::new(device, props, usage, mem::zeroed())
     }
 
-    pub fn flush(&self, device: &Device) {
-        unsafe {
-            device
-                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                    .memory(self.memory())
-                    .offset(0)
-                    .size(vk::WHOLE_SIZE)
-                    .build()])
-                .unwrap();
-        }
+    pub unsafe fn flush(&self, device: &Device) {
+        device
+            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
+                .memory(self.memory())
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .build()])
+            .unwrap();
     }
 }
 
 impl<T> DedicatedMapping<[T]> {
-    pub fn from_iter<I>(
+    pub unsafe fn from_iter<I>(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
@@ -124,23 +124,21 @@ impl<T> DedicatedMapping<[T]> {
         let mut values = values.into_iter();
         let len = values.len();
         let mut x = DedicatedMapping::uninit_array(device, props, usage, len);
-        unsafe {
-            let mut i = 0;
-            while let Some(value) = values.next() {
-                if i >= len {
-                    panic!("iterator length grew unexpectedy");
-                }
-                ptr::write(x[i].as_mut_ptr(), value);
-                i += 1;
+        let mut i = 0;
+        while let Some(value) = values.next() {
+            if i >= len {
+                panic!("iterator length grew unexpectedy");
             }
-            if i < len {
-                panic!("iterator length shrank unexpectedy");
-            }
-            x.assume_init_array()
+            ptr::write(x[i].as_mut_ptr(), value);
+            i += 1;
         }
+        if i < len {
+            panic!("iterator length shrank unexpectedy");
+        }
+        x.assume_init_array()
     }
 
-    pub fn from_slice(
+    pub unsafe fn from_slice(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
@@ -150,10 +148,8 @@ impl<T> DedicatedMapping<[T]> {
         T: Copy,
     {
         let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
-        unsafe {
-            ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
-            x.assume_init_array()
-        }
+        ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
+        x.assume_init_array()
     }
 
     pub unsafe fn zeroed_array(
@@ -169,7 +165,7 @@ impl<T> DedicatedMapping<[T]> {
         x.assume_init_array()
     }
 
-    pub fn flush_range(&self, device: &Device, range: impl RangeBounds<usize>) {
+    pub unsafe fn flush_range(&self, device: &Device, range: impl RangeBounds<usize>) {
         use Bound::*;
         let offset = match range.start_bound() {
             Included(&x) => x as vk::DeviceSize,
@@ -181,20 +177,18 @@ impl<T> DedicatedMapping<[T]> {
             Excluded(&x) => x as vk::DeviceSize - offset,
             Unbounded => vk::WHOLE_SIZE,
         };
-        unsafe {
-            device
-                .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                    .memory(self.memory())
-                    .offset(offset)
-                    .size(size)
-                    .build()])
-                .unwrap();
-        }
+        device
+            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
+                .memory(self.memory())
+                .offset(offset)
+                .size(size)
+                .build()])
+            .unwrap();
     }
 }
 
 impl<T> DedicatedMapping<MaybeUninit<T>> {
-    pub fn uninit(
+    pub unsafe fn uninit(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
@@ -208,19 +202,17 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         );
-        let ptr = unsafe {
-            NonNull::new_unchecked(
-                device
-                    .map_memory(
-                        buffer.memory,
-                        0,
-                        mem::size_of::<T>() as _,
-                        vk::MemoryMapFlags::default(),
-                    )
-                    .unwrap(),
-            )
-            .cast()
-        };
+        let ptr = NonNull::new_unchecked(
+            device
+                .map_memory(
+                    buffer.memory,
+                    0,
+                    mem::size_of::<T>() as _,
+                    vk::MemoryMapFlags::default(),
+                )
+                .unwrap(),
+        )
+        .cast();
         Self { buffer, ptr }
     }
 
@@ -233,7 +225,7 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
 }
 
 impl<T> DedicatedMapping<[MaybeUninit<T>]> {
-    pub fn uninit_array(
+    pub unsafe fn uninit_array(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
@@ -248,17 +240,18 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
             vk::MemoryPropertyFlags::HOST_VISIBLE,
         );
-        let ptr = unsafe {
-            let p = device
+        let ptr = std::slice::from_raw_parts_mut(
+            device
                 .map_memory(
                     buffer.memory,
                     0,
                     mem::size_of::<T>() as _,
                     vk::MemoryMapFlags::default(),
                 )
-                .unwrap();
-            std::slice::from_raw_parts_mut(p as *mut _, size).into()
-        };
+                .unwrap() as *mut _,
+            size,
+        )
+        .into();
         Self { buffer, ptr }
     }
 
@@ -310,29 +303,27 @@ pub struct DedicatedBuffer {
 }
 
 impl DedicatedBuffer {
-    pub fn new(
+    pub unsafe fn new(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         info: &vk::BufferCreateInfo,
         flags: vk::MemoryPropertyFlags,
     ) -> Self {
-        unsafe {
-            let handle = device.create_buffer(info, None).unwrap();
-            let reqs = device.get_buffer_memory_requirements(handle);
-            let memory_ty = find_memory_type(props, reqs.memory_type_bits, flags)
-                .expect("no matching memory type");
-            let memory = device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::builder()
-                        .allocation_size(reqs.size)
-                        .memory_type_index(memory_ty)
-                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().buffer(handle)),
-                    None,
-                )
-                .unwrap();
-            device.bind_buffer_memory(handle, memory, 0).unwrap();
-            Self { handle, memory }
-        }
+        let handle = device.create_buffer(info, None).unwrap();
+        let reqs = device.get_buffer_memory_requirements(handle);
+        let memory_ty =
+            find_memory_type(props, reqs.memory_type_bits, flags).expect("no matching memory type");
+        let memory = device
+            .allocate_memory(
+                &vk::MemoryAllocateInfo::builder()
+                    .allocation_size(reqs.size)
+                    .memory_type_index(memory_ty)
+                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().buffer(handle)),
+                None,
+            )
+            .unwrap();
+        device.bind_buffer_memory(handle, memory, 0).unwrap();
+        Self { handle, memory }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
@@ -348,32 +339,30 @@ pub struct DedicatedImage {
 }
 
 impl DedicatedImage {
-    pub fn new(
+    pub unsafe fn new(
         device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         info: &vk::ImageCreateInfo,
     ) -> Self {
-        unsafe {
-            let handle = device.create_image(info, None).unwrap();
-            let reqs = device.get_image_memory_requirements(handle);
-            let memory_ty = find_memory_type(
-                props,
-                reqs.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        let handle = device.create_image(info, None).unwrap();
+        let reqs = device.get_image_memory_requirements(handle);
+        let memory_ty = find_memory_type(
+            props,
+            reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .expect("no matching memory type");
+        let memory = device
+            .allocate_memory(
+                &vk::MemoryAllocateInfo::builder()
+                    .allocation_size(reqs.size)
+                    .memory_type_index(memory_ty)
+                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().image(handle)),
+                None,
             )
-            .expect("no matching memory type");
-            let memory = device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::builder()
-                        .allocation_size(reqs.size)
-                        .memory_type_index(memory_ty)
-                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().image(handle)),
-                    None,
-                )
-                .unwrap();
-            device.bind_image_memory(handle, memory, 0).unwrap();
-            Self { handle, memory }
-        }
+            .unwrap();
+        device.bind_image_memory(handle, memory, 0).unwrap();
+        Self { handle, memory }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {

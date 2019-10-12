@@ -121,10 +121,12 @@ impl Alloc<'_> {
     }
 
     pub fn flush(&self) {
-        self.buf.buffer.flush_range(
-            &self.buf.device,
-            self.offset() as usize..(self.offset() + self.size()) as usize,
-        );
+        unsafe {
+            self.buf.buffer.flush_range(
+                &self.buf.device,
+                self.offset() as usize..(self.offset() + self.size()) as usize,
+            );
+        }
     }
 }
 
