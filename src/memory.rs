@@ -282,6 +282,9 @@ impl<T: ?Sized> DedicatedMapping<T> {
     }
 }
 
+unsafe impl<T: ?Sized> Send for DedicatedMapping<T> {}
+unsafe impl<T: ?Sized> Sync for DedicatedMapping<T> {}
+
 impl<T: ?Sized> Deref for DedicatedMapping<T> {
     type Target = T;
 

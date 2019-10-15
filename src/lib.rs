@@ -10,3 +10,4 @@ mod ring_alloc;
 
 pub use memory::{DedicatedBuffer, DedicatedImage, DedicatedMapping, Staged};
 pub use region::{BufferRegion, BufferRegionAlloc};
+pub use staging::StagingBuffer;
