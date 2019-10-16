@@ -177,6 +177,10 @@ impl Reactor {
         (transfer, thread)
     }
 
+    pub fn poll(&mut self) -> Result<(), Disconnected> {
+        self.run_for(Duration::from_secs(0))
+    }
+
     pub fn run_for(&mut self, timeout: Duration) -> Result<(), Disconnected> {
         self.queue()?;
         self.flush();
