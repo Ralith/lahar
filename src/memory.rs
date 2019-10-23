@@ -245,7 +245,7 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
                 .map_memory(
                     buffer.memory,
                     0,
-                    mem::size_of::<T>() as _,
+                    (size * mem::size_of::<T>()) as _,
                     vk::MemoryMapFlags::default(),
                 )
                 .unwrap() as *mut _,
