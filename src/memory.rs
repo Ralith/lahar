@@ -135,7 +135,7 @@ impl<T> DedicatedMapping<[T]> {
         if i < len {
             panic!("iterator length shrank unexpectedy");
         }
-        x.assume_init_array()
+        x.assume_init()
     }
 
     pub unsafe fn from_slice(
@@ -149,7 +149,7 @@ impl<T> DedicatedMapping<[T]> {
     {
         let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
         ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
-        x.assume_init_array()
+        x.assume_init()
     }
 
     pub unsafe fn zeroed_array(
@@ -162,10 +162,10 @@ impl<T> DedicatedMapping<[T]> {
         for elt in &mut *x {
             ptr::write(elt.as_mut_ptr(), mem::zeroed());
         }
-        x.assume_init_array()
+        x.assume_init()
     }
 
-    pub unsafe fn flush_range(&self, device: &Device, range: impl RangeBounds<usize>) {
+    pub unsafe fn flush_elts(&self, device: &Device, range: impl RangeBounds<usize>) {
         use Bound::*;
         let offset = match range.start_bound() {
             Included(&x) => x as vk::DeviceSize,
@@ -255,7 +255,7 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
         Self { buffer, ptr }
     }
 
-    pub unsafe fn assume_init_array(self) -> DedicatedMapping<[T]> {
+    pub unsafe fn assume_init(self) -> DedicatedMapping<[T]> {
         DedicatedMapping {
             buffer: self.buffer,
             ptr: NonNull::new_unchecked(self.ptr.as_ptr() as *mut [T]),

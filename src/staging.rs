@@ -122,7 +122,7 @@ impl Alloc<'_> {
 
     pub fn flush(&self) {
         unsafe {
-            self.buf.buffer.flush_range(
+            self.buf.buffer.flush_elts(
                 &self.buf.device,
                 self.offset() as usize..(self.offset() + self.size()) as usize,
             );
