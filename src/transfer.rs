@@ -360,20 +360,19 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
-        if self.in_flight.is_empty() {
-            return;
-        }
         unsafe {
-            self.device
-                .wait_for_fences(&self.in_flight_fences, true, u64::max_value())
-                .unwrap();
+            if !self.in_flight.is_empty() {
+                self.device
+                    .wait_for_fences(&self.in_flight_fences, true, u64::max_value())
+                    .unwrap();
+            }
+            self.device.destroy_command_pool(self.cmd_pool, None);
             for fence in self.spare_fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
             for fence in self.in_flight_fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
-            self.device.destroy_command_pool(self.cmd_pool, None);
         }
     }
 }
