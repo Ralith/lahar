@@ -300,6 +300,7 @@ impl<T: ?Sized> DerefMut for DedicatedMapping<T> {
 }
 
 /// A buffer with its own memory allocation
+#[derive(Copy, Clone)]
 pub struct DedicatedBuffer {
     pub memory: vk::DeviceMemory,
     pub handle: vk::Buffer,
@@ -336,6 +337,7 @@ impl DedicatedBuffer {
 }
 
 /// An image with its own memory allocation
+#[derive(Copy, Clone)]
 pub struct DedicatedImage {
     pub memory: vk::DeviceMemory,
     pub handle: vk::Image,
