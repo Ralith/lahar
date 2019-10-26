@@ -1,6 +1,5 @@
 use std::convert::TryFrom;
 use std::future::Future;
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -12,7 +11,7 @@ use futures_util::FutureExt;
 
 #[derive(Clone)]
 pub struct TransferHandle {
-    send: mpsc::Sender<Message>,
+    send: crossbeam_channel::Sender<Message>,
 }
 
 impl TransferHandle {
@@ -122,7 +121,7 @@ pub struct Reactor {
     pending: Option<Batch>,
     buffer_barriers: Vec<vk::BufferMemoryBarrier>,
     image_barriers: Vec<vk::ImageMemoryBarrier>,
-    recv: mpsc::Receiver<Message>,
+    recv: crossbeam_channel::Receiver<Message>,
 }
 
 impl Reactor {
@@ -133,7 +132,7 @@ impl Reactor {
         queue: vk::Queue,
         dst_queue_family: Option<u32>,
     ) -> (TransferHandle, Self) {
-        let (send, recv) = mpsc::channel();
+        let (send, recv) = crossbeam_channel::unbounded();
         let cmd_pool = device
             .create_command_pool(
                 &vk::CommandPoolCreateInfo::builder()
@@ -227,13 +226,14 @@ impl Reactor {
 
     fn queue(&mut self) -> Result<(), Disconnected> {
         loop {
+            use crossbeam_channel::TryRecvError::*;
             match self.recv.try_recv() {
                 Ok(Message { sender, op }) => {
                     let cmd = self.prepare(sender);
                     self.queue_op(cmd, op);
                 }
-                Err(mpsc::TryRecvError::Empty) => return Err(Disconnected),
-                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                Err(Disconnected) => return Err(self::Disconnected),
+                Err(Empty) => return Ok(()),
             }
         }
     }
