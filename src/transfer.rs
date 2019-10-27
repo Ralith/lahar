@@ -31,18 +31,26 @@ impl TransferHandle {
         recv.map(|x| x.map_err(|_| ShutDown))
     }
 
-    /// `dst` must be in TRANSFER_DST_OPTIMAL
+    /// Copy data from a buffer to an image
+    ///
+    /// `needs_transition` indicates whether `dst` should be transitioned to `TRANSFER_DST_OPTIMAL`
     pub unsafe fn upload_image(
         &self,
         src: vk::Buffer,
         dst: vk::Image,
         region: vk::BufferImageCopy,
+        needs_transition: bool,
     ) -> impl Future<Output = Result<(), ShutDown>> {
         let (sender, recv) = oneshot::channel();
         self.send
             .send(Message {
                 sender,
-                op: Op::UploadImage { src, dst, region },
+                op: Op::UploadImage {
+                    src,
+                    dst,
+                    region,
+                    needs_transition,
+                },
             })
             .unwrap();
         recv.map(|x| x.map_err(|_| ShutDown))
@@ -103,6 +111,7 @@ enum Op {
         src: vk::Buffer,
         dst: vk::Image,
         region: vk::BufferImageCopy,
+        needs_transition: bool,
     },
 }
 
@@ -255,7 +264,37 @@ impl Reactor {
                         .build(),
                 );
             },
-            UploadImage { src, dst, region } => unsafe {
+            UploadImage {
+                src,
+                dst,
+                region,
+                needs_transition,
+            } => unsafe {
+                if needs_transition {
+                    self.device.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::default(),
+                        &[],
+                        &[],
+                        &[vk::ImageMemoryBarrier::builder()
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .image(dst)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: region.image_subresource.aspect_mask,
+                                base_mip_level: region.image_subresource.mip_level,
+                                level_count: 1,
+                                base_array_layer: region.image_subresource.base_array_layer,
+                                layer_count: region.image_subresource.layer_count,
+                            })
+                            .build()],
+                    );
+                }
                 self.device.cmd_copy_buffer_to_image(
                     cmd,
                     src,
