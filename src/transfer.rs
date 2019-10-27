@@ -272,6 +272,13 @@ impl Reactor {
                         .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         .image(dst)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: region.image_subresource.aspect_mask,
+                            base_mip_level: region.image_subresource.mip_level,
+                            level_count: 1,
+                            base_array_layer: region.image_subresource.base_array_layer,
+                            layer_count: region.image_subresource.layer_count,
+                        })
                         .build(),
                 );
             },
