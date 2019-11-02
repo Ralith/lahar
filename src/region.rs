@@ -15,7 +15,7 @@ impl BufferRegion {
     pub unsafe fn new(
         device: Arc<Device>,
         props: &vk::PhysicalDeviceMemoryProperties,
-        chunk_size: vk::DeviceSize,
+        capacity: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Self {
         let buffer = device
@@ -36,14 +36,14 @@ impl BufferRegion {
         )
         .expect("vulkan guarantees a device local memory type exists");
         Self {
-            inner: Region::new(device, memory_type_index, chunk_size),
+            inner: Region::new(device, memory_type_index, capacity),
             usage,
         }
     }
 
     /// Allocate `size` bytes positioned at a multiple of `alignment`
     pub fn alloc(&mut self, size: vk::DeviceSize, alignment: vk::DeviceSize) -> BufferRegionAlloc {
-        if self.inner.has_capacity_for(size, alignment) {
+        if self.inner.has_capacity_for(size) {
             self.grow(size);
         }
 
@@ -54,16 +54,18 @@ impl BufferRegion {
         }
     }
 
+    /// Bytes returned via `alloc`
     pub fn used(&self) -> vk::DeviceSize {
         self.inner.used
     }
 
+    /// Unreachable bytes
     pub fn wasted(&self) -> vk::DeviceSize {
         self.inner.wasted
     }
 
     fn grow(&mut self, minimum_size: vk::DeviceSize) {
-        let size = self.inner.chunk_size(minimum_size);
+        let size = self.inner.next_chunk_size(minimum_size);
         unsafe {
             let handle = self
                 .inner
@@ -108,7 +110,7 @@ pub struct BufferRegionAlloc {
     pub offset: vk::DeviceSize,
 }
 
-/// Simple region allocator for buffer data
+/// Simple region allocator for color images
 pub struct ImageRegion {
     inner: Region<()>,
 }
@@ -117,7 +119,7 @@ impl ImageRegion {
     pub unsafe fn new(
         device: Arc<Device>,
         props: &vk::PhysicalDeviceMemoryProperties,
-        chunk_size: vk::DeviceSize,
+        capacity: vk::DeviceSize,
     ) -> Self {
         let image = device
             .create_image(
@@ -144,32 +146,50 @@ impl ImageRegion {
         )
         .expect("vulkan guarantees a device local memory type exists");
         Self {
-            inner: Region::new(device, memory_type_index, chunk_size),
+            inner: Region::new(device, memory_type_index, capacity),
         }
     }
 
-    /// Allocate `size` bytes positioned at a multiple of `alignment`
+    /// Allocate an image
+    ///
+    /// The caller is responsible for freeing the `vk::Image`. `info.format` must not be a depth or
+    /// stencil format.
     pub unsafe fn alloc(&mut self, info: &vk::ImageCreateInfo) -> vk::Image {
+        debug_assert!(![
+            vk::Format::D16_UNORM,
+            vk::Format::X8_D24_UNORM_PACK32,
+            vk::Format::D32_SFLOAT,
+            vk::Format::S8_UINT,
+            vk::Format::D16_UNORM_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,
+            vk::Format::D32_SFLOAT_S8_UINT
+        ]
+        .contains(&info.format));
         let handle = self.inner.device.create_image(info, None).unwrap();
         let reqs = self.inner.device.get_image_memory_requirements(handle);
-        if self.inner.has_capacity_for(reqs.size, reqs.alignment) {
+        if self.inner.has_capacity_for(reqs.size) {
             self.grow(reqs.size);
         }
         let offset = self.inner.alloc(reqs.size, reqs.alignment);
-        self.inner.device.bind_image_memory(handle, self.inner.chunks.last().unwrap().memory, offset).unwrap();
+        self.inner
+            .device
+            .bind_image_memory(handle, self.inner.chunks.last().unwrap().memory, offset)
+            .unwrap();
         handle
     }
 
+    /// Bytes used in images returned via `alloc`
     pub fn used(&self) -> vk::DeviceSize {
         self.inner.used
     }
 
+    /// Unreachable bytes
     pub fn wasted(&self) -> vk::DeviceSize {
         self.inner.wasted
     }
 
     fn grow(&mut self, minimum_size: vk::DeviceSize) {
-        let size = self.inner.chunk_size(minimum_size);
+        let size = self.inner.next_chunk_size(minimum_size);
         unsafe {
             let memory = self
                 .inner
@@ -188,22 +208,22 @@ impl ImageRegion {
 
 struct Region<T> {
     device: Arc<Device>,
-    chunk_size: vk::DeviceSize,
+    capacity: vk::DeviceSize,
     memory_type_index: u32,
     chunks: Vec<Chunk<T>>,
-    chunk_fill: vk::DeviceSize,
+    cursor: vk::DeviceSize,
     used: vk::DeviceSize,
     wasted: vk::DeviceSize,
 }
 
 impl<T> Region<T> {
-    unsafe fn new(device: Arc<Device>, memory_type_index: u32, chunk_size: vk::DeviceSize) -> Self {
+    unsafe fn new(device: Arc<Device>, memory_type_index: u32, capacity: vk::DeviceSize) -> Self {
         Self {
             device,
-            chunk_size,
+            capacity,
             memory_type_index,
             chunks: Vec::new(),
-            chunk_fill: 0,
+            cursor: 0,
             used: 0,
             wasted: 0,
         }
@@ -214,26 +234,24 @@ impl<T> Region<T> {
     where
         T: Copy,
     {
-        debug_assert!(self.has_capacity_for(size, alignment));
-        let offset = align(self.chunk_fill, alignment);
-        self.chunk_fill = offset + size;
-        self.used += size;
-        offset
+        let off = align_down(self.cursor - size, alignment);
+        self.cursor = off;
+        off
     }
 
     fn grow(&mut self, chunk: Chunk<T>, size: vk::DeviceSize) {
         self.chunks.push(chunk);
-        self.wasted += self.chunk_size.saturating_sub(self.chunk_fill);
-        self.chunk_fill = 0;
-        self.chunk_size = size;
+        self.wasted += self.cursor;
+        self.cursor = size;
+        self.capacity = size;
     }
 
-    fn has_capacity_for(&self, size: vk::DeviceSize, alignment: vk::DeviceSize) -> bool {
-        !self.chunks.is_empty() && align(self.chunk_fill, alignment) + size <= self.chunk_size
+    fn has_capacity_for(&self, size: vk::DeviceSize) -> bool {
+        self.cursor > size
     }
 
-    fn chunk_size(&self, alloc_size: vk::DeviceSize) -> vk::DeviceSize {
-        self.chunk_size.max(alloc_size)
+    fn next_chunk_size(&self, alloc_size: vk::DeviceSize) -> vk::DeviceSize {
+        self.capacity.max(alloc_size) * 2
     }
 }
 
@@ -252,9 +270,9 @@ struct Chunk<T> {
     handle: T,
 }
 
-fn align(x: vk::DeviceSize, alignment: vk::DeviceSize) -> vk::DeviceSize {
-    assert!(alignment.is_power_of_two());
-    (x + alignment - 1) & (!alignment + 1)
+fn align_down(x: vk::DeviceSize, alignment: vk::DeviceSize) -> vk::DeviceSize {
+    debug_assert!(alignment.is_power_of_two());
+    x & !(alignment - 1)
 }
 
 #[cfg(test)]
@@ -263,8 +281,8 @@ mod tests {
 
     #[test]
     fn align_sanity() {
-        assert_eq!(align(3, 4), 4);
-        assert_eq!(align(4, 4), 4);
-        assert_eq!(align(5, 4), 8);
+        assert_eq!(align_down(3, 4), 0);
+        assert_eq!(align_down(4, 4), 4);
+        assert_eq!(align_down(5, 4), 4);
     }
 }
