@@ -8,6 +8,6 @@ readme = "README.md"
 
 [dependencies]
 ash = "0.29"
-futures-util-preview = "0.3.0-alpha.19"
-futures-channel-preview = "0.3.0-alpha.19"
+futures-util = { version = "0.3.1", default-features = false, features = ["std", "async-await"] }
+futures-channel = "0.3.1"
 crossbeam-channel = "0.3.9"
