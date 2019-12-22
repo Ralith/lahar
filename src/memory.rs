@@ -180,8 +180,8 @@ impl<T> DedicatedMapping<[T]> {
         device
             .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
                 .memory(self.memory())
-                .offset(offset)
-                .size(size)
+                .offset(offset * mem::size_of::<T>() as vk::DeviceSize)
+                .size(size * mem::size_of::<T>() as vk::DeviceSize)
                 .build()])
             .unwrap();
     }
