@@ -1,19 +1,18 @@
 use std::convert::TryFrom;
 use std::fmt;
 use std::future::Future;
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use ash::version::DeviceV1_0;
 use ash::vk;
-use futures_channel::oneshot;
+use futures_channel::{mpsc, oneshot};
 use futures_util::FutureExt;
 
 #[derive(Clone)]
 pub struct TransferHandle {
-    send: crossbeam_channel::Sender<Message>,
+    send: mpsc::UnboundedSender<Message>,
 }
 
 impl TransferHandle {
@@ -25,7 +24,7 @@ impl TransferHandle {
     ) -> impl Future<Output = Result<(), ShutDown>> {
         let (sender, recv) = oneshot::channel();
         self.send
-            .send(Message {
+            .unbounded_send(Message {
                 sender,
                 op: Op::UploadBuffer { src, dst, region },
             })
@@ -45,7 +44,7 @@ impl TransferHandle {
     ) -> impl Future<Output = Result<(), ShutDown>> {
         let (sender, recv) = oneshot::channel();
         self.send
-            .send(Message {
+            .unbounded_send(Message {
                 sender,
                 op: Op::UploadImage {
                     src,
@@ -140,7 +139,7 @@ pub struct Reactor {
     pending: Option<Batch>,
     buffer_barriers: Vec<vk::BufferMemoryBarrier>,
     image_barriers: Vec<vk::ImageMemoryBarrier>,
-    recv: crossbeam_channel::Receiver<Message>,
+    recv: mpsc::UnboundedReceiver<Message>,
 }
 
 impl Reactor {
@@ -151,7 +150,7 @@ impl Reactor {
         queue: vk::Queue,
         dst_queue_family: Option<u32>,
     ) -> (TransferHandle, Self) {
-        let (send, recv) = crossbeam_channel::unbounded();
+        let (send, recv) = mpsc::unbounded();
         let cmd_pool = device
             .create_command_pool(
                 &vk::CommandPoolCreateInfo::builder()
@@ -245,14 +244,13 @@ impl Reactor {
 
     fn queue(&mut self) -> Result<(), Disconnected> {
         loop {
-            use crossbeam_channel::TryRecvError::*;
-            match self.recv.try_recv() {
-                Ok(Message { sender, op }) => {
+            match self.recv.try_next() {
+                Ok(Some(Message { sender, op })) => {
                     let cmd = self.prepare(sender);
                     self.queue_op(cmd, op);
                 }
-                Err(Disconnected) => return Err(self::Disconnected),
-                Err(Empty) => return Ok(()),
+                Ok(None) => return Err(self::Disconnected),
+                Err(_) => return Ok(()),
             }
         }
     }
