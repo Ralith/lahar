@@ -1,5 +1,7 @@
 use std::convert::TryFrom;
+use std::fmt;
 use std::future::Future;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -95,6 +97,14 @@ pub fn acquire_image(
 
 #[derive(Debug, Copy, Clone)]
 pub struct ShutDown;
+
+impl fmt::Display for ShutDown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("transfer reactor shut down")
+    }
+}
+
+impl std::error::Error for ShutDown {}
 
 struct Message {
     sender: oneshot::Sender<()>,
