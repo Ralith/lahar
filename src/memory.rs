@@ -98,7 +98,9 @@ impl<T> DedicatedMapping<T> {
     ) -> Self {
         Self::new(device, props, usage, mem::zeroed())
     }
+}
 
+impl<T: ?Sized> DedicatedMapping<T> {
     pub unsafe fn flush(&self, device: &Device) {
         device
             .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
