@@ -43,7 +43,7 @@ impl BufferRegion {
 
     /// Allocate `size` bytes positioned at a multiple of `alignment`
     pub fn alloc(&mut self, size: vk::DeviceSize, alignment: vk::DeviceSize) -> BufferRegionAlloc {
-        if self.inner.has_capacity_for(size) {
+        if !self.inner.has_capacity_for(size) {
             self.grow(size);
         }
 
@@ -167,7 +167,7 @@ impl ImageRegion {
         .contains(&info.format));
         let handle = self.inner.device.create_image(info, None).unwrap();
         let reqs = self.inner.device.get_image_memory_requirements(handle);
-        if self.inner.has_capacity_for(reqs.size) {
+        if !self.inner.has_capacity_for(reqs.size) {
             self.grow(reqs.size);
         }
         let offset = self.inner.alloc(reqs.size, reqs.alignment);
