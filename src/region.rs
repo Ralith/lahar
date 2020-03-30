@@ -105,6 +105,7 @@ impl Drop for BufferRegion {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct BufferRegionAlloc {
     pub buffer: vk::Buffer,
     pub offset: vk::DeviceSize,
