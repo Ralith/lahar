@@ -167,18 +167,28 @@ impl<T> DedicatedMapping<[T]> {
         x.assume_init()
     }
 
-    pub unsafe fn flush_elts(&self, device: &Device, range: impl RangeBounds<usize>) {
+    pub unsafe fn flush_elts(
+        &self,
+        device: &Device,
+        non_coherent_atom_size: vk::DeviceSize,
+        range: impl RangeBounds<usize>,
+    ) {
         use Bound::*;
         let offset = match range.start_bound() {
             Included(&x) => x as vk::DeviceSize,
             Excluded(&x) => x as vk::DeviceSize + 1,
             Unbounded => 0,
         };
-        let size = match range.end_bound() {
+        let mut size = match range.end_bound() {
             Included(&x) => x as vk::DeviceSize - offset + 1,
             Excluded(&x) => x as vk::DeviceSize - offset,
             Unbounded => vk::WHOLE_SIZE,
         };
+        if size != vk::WHOLE_SIZE {
+            // Round up
+            size = ((size + non_coherent_atom_size - 1) / non_coherent_atom_size)
+                * non_coherent_atom_size;
+        }
         device
             .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
                 .memory(self.memory())

@@ -120,10 +120,11 @@ impl Alloc<'_> {
         self.bytes.len() as _
     }
 
-    pub fn flush(&self) {
+    pub fn flush(&self, non_coherent_atom_size: vk::DeviceSize) {
         unsafe {
             self.buf.buffer.flush_elts(
                 &self.buf.device,
+                non_coherent_atom_size,
                 self.offset() as usize..(self.offset() + self.size()) as usize,
             );
         }
