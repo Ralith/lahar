@@ -16,48 +16,26 @@ pub struct TransferHandle {
 }
 
 impl TransferHandle {
-    pub unsafe fn upload_buffer(
+    pub unsafe fn run(
         &self,
-        src: vk::Buffer,
-        dst: vk::Buffer,
-        region: vk::BufferCopy,
+        f: impl FnOnce(&mut TransferContext, vk::CommandBuffer) + Send + 'static,
     ) -> impl Future<Output = Result<(), ShutDown>> {
         let (sender, recv) = oneshot::channel();
-        self.send
-            .unbounded_send(Message {
-                sender,
-                op: Op::UploadBuffer { src, dst, region },
-            })
-            .unwrap();
+        let _ = self.send.unbounded_send(Message {
+            sender,
+            op: Box::new(f),
+        });
         recv.map(|x| x.map_err(|_| ShutDown))
     }
+}
 
-    /// Copy data from a buffer to an image
-    ///
-    /// `needs_transition` indicates whether `dst` should be transitioned to `TRANSFER_DST_OPTIMAL`
-    pub unsafe fn upload_image(
-        &self,
-        src: vk::Buffer,
-        dst: vk::Image,
-        region: vk::BufferImageCopy,
-        needs_transition: bool,
-    ) -> impl Future<Output = Result<(), ShutDown>> {
-        let (sender, recv) = oneshot::channel();
-        self.send
-            .unbounded_send(Message {
-                sender,
-                op: Op::UploadImage {
-                    src,
-                    dst,
-                    region,
-                    needs_transition,
-                },
-            })
-            .unwrap();
-        recv.map(|x| x.map_err(|_| ShutDown))
-    }
-
-    // Extensible with practically any conceivable transfer command
+pub struct TransferContext {
+    pub device: Arc<ash::Device>,
+    pub queue_family: u32,
+    /// May be equal to queue_family
+    pub dst_queue_family: u32,
+    pub buffer_barriers: Vec<vk::BufferMemoryBarrier>,
+    pub image_barriers: Vec<vk::ImageMemoryBarrier>,
 }
 
 pub fn acquire_buffer(
@@ -107,29 +85,11 @@ impl std::error::Error for ShutDown {}
 
 struct Message {
     sender: oneshot::Sender<()>,
-    op: Op,
-}
-
-enum Op {
-    UploadBuffer {
-        src: vk::Buffer,
-        dst: vk::Buffer,
-        region: vk::BufferCopy,
-    },
-    UploadImage {
-        src: vk::Buffer,
-        dst: vk::Image,
-        region: vk::BufferImageCopy,
-        needs_transition: bool,
-    },
+    op: Box<dyn FnOnce(&mut TransferContext, vk::CommandBuffer) + Send>,
 }
 
 pub struct Reactor {
-    device: Arc<ash::Device>,
-    queue_family: u32,
     queue: vk::Queue,
-    /// == queue_family if `None` was supplied on construction
-    dst_queue_family: u32, // switch to Option<u32> if we end up needing to branch anyway
     spare_fences: Vec<vk::Fence>,
     spare_cmds: Vec<vk::CommandBuffer>,
     in_flight: Vec<Batch>,
@@ -137,9 +97,8 @@ pub struct Reactor {
     in_flight_fences: Vec<vk::Fence>,
     cmd_pool: vk::CommandPool,
     pending: Option<Batch>,
-    buffer_barriers: Vec<vk::BufferMemoryBarrier>,
-    image_barriers: Vec<vk::ImageMemoryBarrier>,
     recv: mpsc::UnboundedReceiver<Message>,
+    ctx: TransferContext,
 }
 
 impl Reactor {
@@ -162,19 +121,21 @@ impl Reactor {
         (
             TransferHandle { send },
             Self {
-                device,
-                queue_family,
                 queue,
-                dst_queue_family: dst_queue_family.unwrap_or(queue_family),
                 spare_fences: Vec::new(),
                 spare_cmds: Vec::new(),
                 in_flight: Vec::new(),
                 in_flight_fences: Vec::new(),
                 cmd_pool,
                 pending: None,
-                buffer_barriers: Vec::new(),
-                image_barriers: Vec::new(),
                 recv,
+                ctx: TransferContext {
+                    device,
+                    queue_family,
+                    dst_queue_family: dst_queue_family.unwrap_or(queue_family),
+                    buffer_barriers: Vec::new(),
+                    image_barriers: Vec::new(),
+                },
             },
         )
     }
@@ -210,7 +171,7 @@ impl Reactor {
         // We could move this to a background thread and continue to submit new work while it's
         // waiting, but we want to batch up operations a bit anyway.
         let result = unsafe {
-            self.device.wait_for_fences(
+            self.ctx.device.wait_for_fences(
                 &self.in_flight_fences,
                 false,
                 u64::try_from(timeout.as_nanos()).unwrap_or(u64::max_value()),
@@ -224,12 +185,13 @@ impl Reactor {
         for i in 0..self.in_flight.len() {
             unsafe {
                 if self
+                    .ctx
                     .device
                     .get_fence_status(self.in_flight_fences[i])
                     .is_ok()
                 {
                     let fence = self.in_flight_fences.swap_remove(i);
-                    self.device.reset_fences(&[fence]).unwrap();
+                    self.ctx.device.reset_fences(&[fence]).unwrap();
                     self.spare_fences.push(fence);
                     let batch = self.in_flight.swap_remove(i);
                     for sender in batch.senders {
@@ -247,88 +209,11 @@ impl Reactor {
             match self.recv.try_next() {
                 Ok(Some(Message { sender, op })) => {
                     let cmd = self.prepare(sender);
-                    self.queue_op(cmd, op);
+                    op(&mut self.ctx, cmd);
                 }
                 Ok(None) => return Err(self::Disconnected),
                 Err(_) => return Ok(()),
             }
-        }
-    }
-
-    fn queue_op(&mut self, cmd: vk::CommandBuffer, op: Op) {
-        use Op::*;
-        match op {
-            UploadBuffer { src, dst, region } => unsafe {
-                self.device.cmd_copy_buffer(cmd, src, dst, &[region]);
-                self.buffer_barriers.push(
-                    vk::BufferMemoryBarrier::builder()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .src_queue_family_index(self.queue_family)
-                        .dst_queue_family_index(self.dst_queue_family)
-                        .buffer(dst)
-                        .offset(region.dst_offset)
-                        .size(region.size)
-                        .build(),
-                );
-            },
-            UploadImage {
-                src,
-                dst,
-                region,
-                needs_transition,
-            } => unsafe {
-                if needs_transition {
-                    self.device.cmd_pipeline_barrier(
-                        cmd,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::DependencyFlags::default(),
-                        &[],
-                        &[],
-                        &[vk::ImageMemoryBarrier::builder()
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .image(dst)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: region.image_subresource.aspect_mask,
-                                base_mip_level: region.image_subresource.mip_level,
-                                level_count: 1,
-                                base_array_layer: region.image_subresource.base_array_layer,
-                                layer_count: region.image_subresource.layer_count,
-                            })
-                            .build()],
-                    );
-                }
-                self.device.cmd_copy_buffer_to_image(
-                    cmd,
-                    src,
-                    dst,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[region],
-                );
-                self.image_barriers.push(
-                    vk::ImageMemoryBarrier::builder()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                        .src_queue_family_index(self.queue_family)
-                        .dst_queue_family_index(self.dst_queue_family)
-                        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .image(dst)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: region.image_subresource.aspect_mask,
-                            base_mip_level: region.image_subresource.mip_level,
-                            level_count: 1,
-                            base_array_layer: region.image_subresource.base_array_layer,
-                            layer_count: region.image_subresource.layer_count,
-                        })
-                        .build(),
-                );
-            },
         }
     }
 
@@ -341,7 +226,8 @@ impl Reactor {
             cmd
         } else {
             unsafe {
-                self.device
+                self.ctx
+                    .device
                     .allocate_command_buffers(
                         &vk::CommandBufferAllocateInfo::builder()
                             .command_pool(self.cmd_pool)
@@ -354,7 +240,8 @@ impl Reactor {
             }
         };
         unsafe {
-            self.device
+            self.ctx
+                .device
                 .begin_command_buffer(
                     cmd,
                     &vk::CommandBufferBeginInfo::builder()
@@ -375,27 +262,28 @@ impl Reactor {
             Some(x) => x,
             None => return,
         };
+        let device = &self.ctx.device;
         let fence = if let Some(fence) = self.spare_fences.pop() {
             fence
         } else {
             unsafe {
-                self.device
+                device
                     .create_fence(&vk::FenceCreateInfo::default(), None)
                     .unwrap()
             }
         };
         unsafe {
-            self.device.cmd_pipeline_barrier(
+            device.cmd_pipeline_barrier(
                 pending.cmd,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::VERTEX_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::DependencyFlags::default(),
                 &[],
-                &self.buffer_barriers,
-                &self.image_barriers,
+                &self.ctx.buffer_barriers,
+                &self.ctx.image_barriers,
             );
-            self.device.end_command_buffer(pending.cmd).unwrap();
-            self.device
+            device.end_command_buffer(pending.cmd).unwrap();
+            device
                 .queue_submit(
                     self.queue,
                     &[vk::SubmitInfo::builder()
@@ -405,8 +293,8 @@ impl Reactor {
                 )
                 .unwrap();
         }
-        self.buffer_barriers.clear();
-        self.image_barriers.clear();
+        self.ctx.buffer_barriers.clear();
+        self.ctx.image_barriers.clear();
         self.in_flight.push(pending);
         self.in_flight_fences.push(fence);
     }
@@ -414,18 +302,19 @@ impl Reactor {
 
 impl Drop for Reactor {
     fn drop(&mut self) {
+        let device = &self.ctx.device;
         unsafe {
             if !self.in_flight.is_empty() {
-                self.device
+                device
                     .wait_for_fences(&self.in_flight_fences, true, u64::max_value())
                     .unwrap();
             }
-            self.device.destroy_command_pool(self.cmd_pool, None);
+            device.destroy_command_pool(self.cmd_pool, None);
             for fence in self.spare_fences.drain(..) {
-                self.device.destroy_fence(fence, None);
+                device.destroy_fence(fence, None);
             }
             for fence in self.in_flight_fences.drain(..) {
-                self.device.destroy_fence(fence, None);
+                device.destroy_fence(fence, None);
             }
         }
     }
