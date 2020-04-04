@@ -66,10 +66,9 @@ impl BufferRegion {
 
     fn grow(&mut self, minimum_size: vk::DeviceSize) {
         let size = self.inner.next_chunk_size(minimum_size);
+        let device = &self.inner.device;
         unsafe {
-            let handle = self
-                .inner
-                .device
+            let handle = device
                 .create_buffer(
                     &vk::BufferCreateInfo::builder()
                         .size(size)
@@ -79,9 +78,7 @@ impl BufferRegion {
                 )
                 .unwrap();
             let reqs = self.inner.device.get_buffer_memory_requirements(handle);
-            let memory = self
-                .inner
-                .device
+            let memory = device
                 .allocate_memory(
                     &vk::MemoryAllocateInfo::builder()
                         .allocation_size(reqs.size)
@@ -90,6 +87,7 @@ impl BufferRegion {
                     None,
                 )
                 .unwrap();
+            device.bind_buffer_memory(handle, memory, 0).unwrap();
             self.inner.grow(Chunk { handle, memory }, size);
         }
     }
