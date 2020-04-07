@@ -174,26 +174,34 @@ impl<T> DedicatedMapping<[T]> {
         range: impl RangeBounds<usize>,
     ) {
         use Bound::*;
-        let offset = match range.start_bound() {
+        let first = match range.start_bound() {
             Included(&x) => x as vk::DeviceSize,
             Excluded(&x) => x as vk::DeviceSize + 1,
             Unbounded => 0,
         };
+        let raw_offset = first * mem::size_of::<T>() as vk::DeviceSize;
+        // Round down to first preceding non-coherent atom
+        let rounded_offset = (raw_offset / non_coherent_atom_size) * non_coherent_atom_size;
+        let prefix = raw_offset - rounded_offset;
         let mut size = match range.end_bound() {
-            Included(&x) => x as vk::DeviceSize - offset + 1,
-            Excluded(&x) => x as vk::DeviceSize - offset,
+            Included(&x) => {
+                prefix + mem::size_of::<T>() as vk::DeviceSize * (x as vk::DeviceSize - first + 1)
+            }
+            Excluded(&x) => {
+                prefix + mem::size_of::<T>() as vk::DeviceSize * (x as vk::DeviceSize - first)
+            }
             Unbounded => vk::WHOLE_SIZE,
         };
         if size != vk::WHOLE_SIZE {
-            // Round up
+            // Round up to the end of the non-coherent atom
             size = ((size + non_coherent_atom_size - 1) / non_coherent_atom_size)
                 * non_coherent_atom_size;
         }
         device
             .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
                 .memory(self.memory())
-                .offset(offset * mem::size_of::<T>() as vk::DeviceSize)
-                .size(size * mem::size_of::<T>() as vk::DeviceSize)
+                .offset(rounded_offset)
+                .size(size)
                 .build()])
             .unwrap();
     }
