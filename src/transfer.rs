@@ -184,7 +184,7 @@ impl Reactor {
             Err(e) => panic!("{}", e),
             Ok(()) => {}
         }
-        for i in 0..self.in_flight.len() {
+        for i in (0..self.in_flight.len()).rev() {
             unsafe {
                 if self
                     .ctx
