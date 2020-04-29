@@ -190,7 +190,7 @@ impl Reactor {
                     .ctx
                     .device
                     .get_fence_status(self.in_flight_fences[i])
-                    .is_ok()
+                    .unwrap()
                 {
                     let fence = self.in_flight_fences.swap_remove(i);
                     self.ctx.device.reset_fences(&[fence]).unwrap();
