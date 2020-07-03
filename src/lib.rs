@@ -2,12 +2,14 @@
 
 pub mod staging;
 pub mod transfer;
+pub mod async_queue;
 
 mod condition;
 mod memory;
 mod region;
 mod ring_alloc;
 
+pub use async_queue::AsyncQueue;
 pub use memory::{DedicatedBuffer, DedicatedImage, DedicatedMapping, Staged};
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging::StagingBuffer;

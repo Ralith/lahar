@@ -10,3 +10,4 @@ readme = "README.md"
 ash = "0.31"
 futures-util = { version = "0.3.1", default-features = false, features = ["std", "async-await"] }
 futures-channel = "0.3.1"
+futures-intrusive = "0.3.1"
