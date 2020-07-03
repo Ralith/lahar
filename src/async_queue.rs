@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    mem,
+    fmt, mem,
     sync::{Arc, Mutex},
 };
 
@@ -50,6 +50,7 @@ impl AsyncQueue {
             pending: Mutex::new(PendingBatch {
                 batch: Batch::new(),
                 seq: 1,
+                dead: false,
             }),
             highest_batch_sent: Mutex::new(0),
         });
@@ -130,23 +131,42 @@ impl AsyncQueue {
     }
 
     /// Free Vulkan resources
-    ///
-    /// Must not be called until all handles have been destroyed
     pub unsafe fn destroy(&mut self, device: &Device) {
-        assert_eq!(
-            Arc::strong_count(&self.shared),
-            1,
-            "all handles must be destroyed first"
-        );
-        // Wait for in-flight work to complete so batches_complete can be destroyed safely
-        device
-            .wait_semaphores(
-                &vk::SemaphoreWaitInfo::builder()
-                    .semaphores(&[self.shared.batches_complete])
-                    .values(&[self.batches_completed + self.in_flight.len() as u64]),
-                !0,
-            )
-            .unwrap();
+        // Prevent future work from being enqueued, submit all enqueued work, and block other access
+        // by holding the lock until complete
+        {
+            let mut pending = self.shared.pending.lock().unwrap();
+            pending.dead = true;
+            if !pending.batch.cmds.is_empty() {
+                self.batches_received += 1;
+                device
+                    .queue_submit(
+                        self.queue,
+                        &[vk::SubmitInfo::builder()
+                            .command_buffers(&pending.batch.cmds)
+                            .signal_semaphores(&[self.shared.batches_complete])
+                            .push_next(
+                                &mut vk::TimelineSemaphoreSubmitInfo::builder()
+                                    .signal_semaphore_values(&[self.batches_received]),
+                            )
+                            .build()],
+                        vk::Fence::null(),
+                    )
+                    .unwrap();
+                self.in_flight.push_back(pending.batch.event.clone());
+            }
+
+            // Wait for in-flight work to complete so batches_complete can be destroyed safely
+            device
+                .wait_semaphores(
+                    &vk::SemaphoreWaitInfo::builder()
+                        .semaphores(&[self.shared.batches_complete])
+                        .values(&[self.batches_received]),
+                    !0,
+                )
+                .unwrap();
+        }
+
         // Unblock waiters
         for event in self.in_flight.drain(..) {
             event.set();
@@ -173,6 +193,8 @@ struct Shared {
 struct PendingBatch {
     batch: Batch,
     seq: u64,
+    /// Whether no new work is being accepted
+    dead: bool,
 }
 
 struct Batch {
@@ -248,11 +270,18 @@ impl Handle {
     /// when the command buffer has completed.
     ///
     /// Command buffers from previous calls to `cmd` must not be accessed after calling this.
-    pub unsafe fn flush(&mut self, device: &Device) -> Flush {
+    ///
+    /// Returns `Err(Dead)` if the `AsyncQueue` has been destroyed, after which no more work may be
+    /// submitted.
+    pub unsafe fn flush(&mut self, device: &Device) -> Result<Flush, Dead> {
         device.end_command_buffer(self.cmd).unwrap();
         // Enqueue the command buffer
         let (event, seq) = {
             let mut pending = self.shared.pending.lock().unwrap();
+            if pending.dead {
+                self.cmd = vk::CommandBuffer::null();
+                return Err(Dead);
+            }
             pending.batch.cmds.push(self.cmd);
             (pending.batch.event.clone(), pending.seq)
         };
@@ -315,7 +344,7 @@ impl Handle {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )
             .unwrap();
-        Flush(event)
+        Ok(Flush(event))
     }
 
     /// Construct a new handle to the same `AsyncQueue`
@@ -327,14 +356,21 @@ impl Handle {
     pub unsafe fn destroy(&mut self, device: &Device) {
         // Wait for in-flight command buffers to complete so it's safe to destroy the pool
         if let Some(last_sent) = self.in_flight.back() {
-            device
-                .wait_semaphores(
-                    &vk::SemaphoreWaitInfo::builder()
-                        .semaphores(&[self.shared.batches_complete])
-                        .values(&[last_sent.batch]),
-                    !0,
-                )
-                .unwrap();
+            let pending = self.shared.pending.lock().unwrap();
+            if !pending.dead {
+                // If the AsyncQueue (and therefore the semaphores) hasn't been destroyed, make sure
+                // it stays alive until all our work is complete by holding the shared mutex. If it
+                // was already destroyed, then our work is necessarily already complete and we don't
+                // need to wait on the semaphore.
+                device
+                    .wait_semaphores(
+                        &vk::SemaphoreWaitInfo::builder()
+                            .semaphores(&[self.shared.batches_complete])
+                            .values(&[last_sent.batch]),
+                        !0,
+                    )
+                    .unwrap();
+            }
         }
         device.destroy_command_pool(self.cmd_pool, None);
         self.cmd = vk::CommandBuffer::null();
@@ -355,3 +391,15 @@ impl Flush {
         self.0.wait().await
     }
 }
+
+/// Error indicating that an `AsyncQueue` has been destroyed
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Dead;
+
+impl fmt::Display for Dead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("queue destroyed")
+    }
+}
+
+impl std::error::Error for Dead {}
