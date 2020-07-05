@@ -1,7 +1,6 @@
 //! Tools for asynchronous Vulkan
 
 pub mod staging;
-pub mod transfer;
 pub mod async_queue;
 
 mod condition;
