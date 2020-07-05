@@ -3,7 +3,6 @@
 pub mod staging;
 pub mod async_queue;
 
-mod condition;
 mod memory;
 mod region;
 mod ring_alloc;

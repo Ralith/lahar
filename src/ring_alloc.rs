@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 /// State tracker for a ring buffer of contiguous variable-sized allocations with random frees
 pub struct RingAlloc {
+    /// Total size available to allocate
+    capacity: usize,
     /// List of starting offsets, and whether they've been freed
     allocations: VecDeque<(usize, bool)>,
     /// Offset at which the next allocation will start
@@ -14,8 +16,9 @@ pub struct RingAlloc {
 }
 
 impl RingAlloc {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         RingAlloc {
+            capacity,
             allocations: VecDeque::new(),
             head: 0,
             freed: 0,
@@ -23,13 +26,11 @@ impl RingAlloc {
     }
 
     /// Returns the starting offset of a contiguous run of `size` units, or `None` if none exists.
-    ///
-    /// `capacity` is the total capacity of the ring.
-    pub fn alloc(&mut self, capacity: usize, size: usize, align: usize) -> Option<(usize, Id)> {
+    pub fn alloc(&mut self, size: usize, align: usize) -> Option<(usize, Id)> {
         let tail = if let Some(&(tail, _)) = self.allocations.front() {
             tail
         } else {
-            if size > capacity {
+            if size > self.capacity {
                 return None;
             }
             // No allocations, reset to initial state
@@ -48,11 +49,11 @@ impl RingAlloc {
         let id = Id(self.freed.wrapping_add(self.allocations.len() as u64));
         if self.head > tail {
             // There's a run from the head to the end of the buffer
-            let free = capacity - self.head;
+            let free = self.capacity - self.head;
             if free >= size {
                 let start = self.head;
                 self.allocations.push_back((start, false));
-                self.head = (start + size) % capacity;
+                self.head = (start + size) % self.capacity;
                 return Some((start + padding, id));
             }
             // and from the start of the buffer to the tail
@@ -81,6 +82,22 @@ impl RingAlloc {
             self.freed += 1;
         }
     }
+
+    /// Largest allocation of alignment 1 that can currently succeed
+    pub fn available(&self) -> usize {
+        let tail = match self.allocations.front() {
+            Some(&(x, _)) => x,
+            None => return self.capacity,
+        };
+        if self.head == tail {
+            // The empty case is caught above, so we must be full.
+            return 0;
+        }
+        if self.head < tail {
+            return tail - self.head;
+        }
+        tail.max(self.capacity - self.head)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -91,35 +108,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sanity() {
-        let mut r = RingAlloc::new();
-        const CAP: usize = 4;
-        let a = r.alloc(CAP, 3, 1).unwrap();
-        assert!(r.alloc(CAP, 2, 1).is_none());
-        let b = r.alloc(CAP, 1, 1).unwrap();
+    fn alloc() {
+        let mut r = RingAlloc::new(4);
+        let a = r.alloc(3, 1).unwrap();
+        assert!(r.alloc(2, 1).is_none());
+        let b = r.alloc(1, 1).unwrap();
         assert_eq!(b.0, 3);
-        assert!(r.alloc(CAP, 1, 1).is_none());
+        assert!(r.alloc(1, 1).is_none());
         r.free(a.1);
-        let c = r.alloc(CAP, 1, 1).unwrap();
+        let c = r.alloc(1, 1).unwrap();
         assert_eq!(c.0, 0);
-        let d = r.alloc(CAP, 2, 1).unwrap();
+        let d = r.alloc(2, 1).unwrap();
         assert_eq!(d.0, 1);
-        assert!(r.alloc(CAP, 1, 1).is_none());
+        assert!(r.alloc(1, 1).is_none());
         r.free(c.1);
         r.free(b.1);
-        let e = r.alloc(CAP, 1, 1).unwrap();
+        let e = r.alloc(1, 1).unwrap();
         assert_eq!(e.0, 3);
-        let f = r.alloc(CAP, 1, 1).unwrap();
+        let f = r.alloc(1, 1).unwrap();
         assert_eq!(f.0, 0);
     }
 
     #[test]
     fn alignment() {
-        let mut r = RingAlloc::new();
-        const CAP: usize = 4;
-        let _ = r.alloc(CAP, 1, 1).unwrap();
-        let b = r.alloc(CAP, 2, 2).unwrap();
-        assert!(r.alloc(CAP, 1, 1).is_none());
+        let mut r = RingAlloc::new(4);
+        let _ = r.alloc(1, 1).unwrap();
+        let b = r.alloc(2, 2).unwrap();
+        assert!(r.alloc(1, 1).is_none());
         assert_eq!(b.0, 2);
+    }
+
+    #[test]
+    fn available() {
+        let mut r = RingAlloc::new(4);
+        assert_eq!(r.available(), 4);
+        let a = r.alloc(3, 1).unwrap();
+        assert_eq!(r.available(), 1);
+        let _ = r.alloc(1, 1).unwrap();
+        assert_eq!(r.available(), 0);
+        r.free(a.1);
+        assert_eq!(r.available(), 3);
+        let _ = r.alloc(1, 1).unwrap();
+        assert_eq!(r.available(), 2);
+
+        let mut r = RingAlloc::new(4);
+        let a = r.alloc(1, 1).unwrap();
+        let b = r.alloc(1, 1).unwrap();
+        r.free(a.1);
+        assert_eq!(r.available(), 2);
+        r.free(b.1);
+        assert_eq!(r.available(), 4);
     }
 }

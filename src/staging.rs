@@ -1,12 +1,9 @@
-use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
-use std::task::Poll;
 
 use ash::{vk, Device};
-use futures_util::future;
+use futures_intrusive::sync::Semaphore;
 
-use crate::condition::{self, Condition};
 use crate::ring_alloc::{self, RingAlloc};
 use crate::DedicatedMapping;
 
@@ -18,11 +15,11 @@ pub struct StagingBuffer {
     device: Arc<Device>,
     buffer: DedicatedMapping<[u8]>,
     state: Mutex<State>,
+    free: Semaphore,
 }
 
 struct State {
     alloc: RingAlloc,
-    free: Condition,
 }
 
 impl StagingBuffer {
@@ -43,38 +40,45 @@ impl StagingBuffer {
             device,
             buffer,
             state: Mutex::new(State {
-                alloc: RingAlloc::new(),
-                free: Condition::new(),
+                alloc: RingAlloc::new(capacity),
             }),
+            free: Semaphore::new(false, capacity),
         }
     }
 
+    #[inline]
     pub fn buffer(&self) -> vk::Buffer {
         self.buffer.buffer()
     }
 
     /// Largest possible allocation
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.buffer.len()
     }
 
     /// Completes when sufficient space is available
     ///
-    /// Yields `None` if `size > self.capacity()`. No fairness guarantees, i.e. small allocations
-    /// may starve large ones.
-    pub fn alloc(&self, size: usize, align: usize) -> impl Future<Output = Option<Alloc<'_>>> {
-        let mut cond_state = condition::State::default();
-        future::poll_fn(move |cx| {
-            if size > self.capacity() {
-                return Poll::Ready(None);
+    /// Yields `None` if `(size + align - 1) > self.capacity()`. No fairness guarantees, i.e. small
+    /// allocations may starve large ones.
+    pub async fn alloc(&self, size: usize, align: usize) -> Option<Alloc<'_>> {
+        let worst_case = size + align - 1;
+        if worst_case > self.capacity() {
+            return None;
+        }
+        loop {
+            self.free.acquire(worst_case).await;
+            let (result, consumed) = {
+                let mut state = self.state.lock().unwrap();
+                let before = state.alloc.available();
+                let result = state.alloc.alloc(size, align);
+                (result, before - state.alloc.available())
+            };
+            if consumed < worst_case {
+                self.free.release(worst_case - consumed);
             }
-            let mut state = self.state.lock().unwrap();
-            match state.alloc.alloc(self.capacity(), size, align) {
-                None => {
-                    state.free.register(cx, &mut cond_state);
-                    Poll::Pending
-                }
-                Some((offset, id)) => Poll::Ready(Some(Alloc {
+            if let Some((offset, id)) = result {
+                return Some(Alloc {
                     buf: self,
                     bytes: unsafe {
                         std::slice::from_raw_parts_mut(
@@ -83,15 +87,19 @@ impl StagingBuffer {
                         )
                     },
                     id,
-                })),
+                });
             }
-        })
+        }
     }
 
     fn free(&self, id: ring_alloc::Id) {
-        let mut state = self.state.lock().unwrap();
-        state.alloc.free(id);
-        state.free.notify();
+        let released = {
+            let mut state = self.state.lock().unwrap();
+            let before = state.alloc.available();
+            state.alloc.free(id);
+            state.alloc.available() - before
+        };
+        self.free.release(released);
     }
 }
 
