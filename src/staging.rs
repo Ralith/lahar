@@ -62,14 +62,14 @@ impl StagingBuffer {
     ///
     /// Yields `None` if `size > self.capacity()`. No fairness guarantees, i.e. small allocations
     /// may starve large ones.
-    pub fn alloc(&self, size: usize) -> impl Future<Output = Option<Alloc<'_>>> {
+    pub fn alloc(&self, size: usize, align: usize) -> impl Future<Output = Option<Alloc<'_>>> {
         let mut cond_state = condition::State::default();
         future::poll_fn(move |cx| {
             if size > self.capacity() {
                 return Poll::Ready(None);
             }
             let mut state = self.state.lock().unwrap();
-            match state.alloc.alloc(self.capacity(), size) {
+            match state.alloc.alloc(self.capacity(), size, align) {
                 None => {
                     state.free.register(cx, &mut cond_state);
                     Poll::Pending

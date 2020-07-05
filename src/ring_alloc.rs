@@ -25,7 +25,7 @@ impl RingAlloc {
     /// Returns the starting offset of a contiguous run of `size` units, or `None` if none exists.
     ///
     /// `capacity` is the total capacity of the ring.
-    pub fn alloc(&mut self, capacity: usize, size: usize) -> Option<(usize, Id)> {
+    pub fn alloc(&mut self, capacity: usize, size: usize, align: usize) -> Option<(usize, Id)> {
         let tail = if let Some(&(tail, _)) = self.allocations.front() {
             tail
         } else {
@@ -38,6 +38,13 @@ impl RingAlloc {
             self.freed = 0;
             return Some((0, Id(0)));
         };
+        let misalignment = self.head % align;
+        let padding = if misalignment == 0 {
+            0
+        } else {
+            align - misalignment
+        };
+        let size = size + padding;
         let id = Id(self.freed.wrapping_add(self.allocations.len() as u64));
         if self.head > tail {
             // There's a run from the head to the end of the buffer
@@ -46,7 +53,7 @@ impl RingAlloc {
                 let start = self.head;
                 self.allocations.push_back((start, false));
                 self.head = (start + size) % capacity;
-                return Some((start, id));
+                return Some((start + padding, id));
             }
             // and from the start of the buffer to the tail
             if tail >= size {
@@ -62,7 +69,7 @@ impl RingAlloc {
             let start = self.head;
             self.allocations.push_back((start, false));
             self.head = start + size;
-            return Some((start, id));
+            return Some((start + padding, id));
         }
         None
     }
@@ -87,22 +94,32 @@ mod tests {
     fn sanity() {
         let mut r = RingAlloc::new();
         const CAP: usize = 4;
-        let a = r.alloc(CAP, 3).unwrap();
-        assert!(r.alloc(CAP, 2).is_none());
-        let b = r.alloc(CAP, 1).unwrap();
+        let a = r.alloc(CAP, 3, 1).unwrap();
+        assert!(r.alloc(CAP, 2, 1).is_none());
+        let b = r.alloc(CAP, 1, 1).unwrap();
         assert_eq!(b.0, 3);
-        assert!(r.alloc(CAP, 1).is_none());
+        assert!(r.alloc(CAP, 1, 1).is_none());
         r.free(a.1);
-        let c = r.alloc(CAP, 1).unwrap();
+        let c = r.alloc(CAP, 1, 1).unwrap();
         assert_eq!(c.0, 0);
-        let d = r.alloc(CAP, 2).unwrap();
+        let d = r.alloc(CAP, 2, 1).unwrap();
         assert_eq!(d.0, 1);
-        assert!(r.alloc(CAP, 1).is_none());
+        assert!(r.alloc(CAP, 1, 1).is_none());
         r.free(c.1);
         r.free(b.1);
-        let e = r.alloc(CAP, 1).unwrap();
+        let e = r.alloc(CAP, 1, 1).unwrap();
         assert_eq!(e.0, 3);
-        let f = r.alloc(CAP, 1).unwrap();
+        let f = r.alloc(CAP, 1, 1).unwrap();
         assert_eq!(f.0, 0);
+    }
+
+    #[test]
+    fn alignment() {
+        let mut r = RingAlloc::new();
+        const CAP: usize = 4;
+        let _ = r.alloc(CAP, 1, 1).unwrap();
+        let b = r.alloc(CAP, 2, 2).unwrap();
+        assert!(r.alloc(CAP, 1, 1).is_none());
+        assert_eq!(b.0, 2);
     }
 }
