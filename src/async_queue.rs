@@ -321,6 +321,16 @@ impl Handle {
                     let completed_batch = device
                         .get_semaphore_counter_value(self.shared.batches_complete)
                         .unwrap();
+                    // Hack around validation layer false positives
+                    // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/1999
+                    device
+                        .wait_semaphores(
+                            &vk::SemaphoreWaitInfo::builder()
+                                .semaphores(&[self.shared.batches_complete])
+                                .values(&[completed_batch]),
+                            !0,
+                        )
+                        .unwrap();
                     while self
                         .in_flight
                         .front()
