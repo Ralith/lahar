@@ -1,7 +1,7 @@
 //! Tools for asynchronous Vulkan
 
-pub mod staging;
 pub mod async_queue;
+pub mod staging;
 
 mod memory;
 mod region;
