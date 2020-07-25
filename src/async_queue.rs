@@ -13,7 +13,7 @@ use futures_intrusive::sync::ManualResetEvent;
 
 /// Helper for running Vulkan commands asynchronously
 ///
-/// Requires Vulkan 1.2
+/// Requires Vulkan 1.2. Known broken on Intel under Linux for Mesa versions < 20.1.3.
 pub struct AsyncQueue {
     queue: vk::Queue,
     shared: Arc<Shared>,
@@ -92,14 +92,6 @@ impl AsyncQueue {
     pub unsafe fn drive(&mut self, device: &Device) {
         self.submit_work(device);
 
-        // HACKITY HACK: intel/mesa 20.1.1 doesn't update the counter value without this. Remove
-        // when fixed.
-        let _ = device.wait_semaphores(
-            &vk::SemaphoreWaitInfo::builder()
-                .semaphores(&[self.shared.batches_complete])
-                .values(&[self.batches_received]),
-            0,
-        );
         // Broadcast completions
         let completed = device
             .get_semaphore_counter_value(self.shared.batches_complete)
