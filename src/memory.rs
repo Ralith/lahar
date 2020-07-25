@@ -4,6 +4,7 @@ use std::mem::{self, MaybeUninit};
 use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::ptr::{self, NonNull};
 
+use ash::prelude::VkResult as Result;
 use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
@@ -396,6 +397,108 @@ impl DedicatedImage {
     }
 }
 
+/// Allocate and bind memory for use by one or more buffers
+pub unsafe fn alloc_bind(
+    device: &Device,
+    props: &vk::PhysicalDeviceMemoryProperties,
+    flags: vk::MemoryPropertyFlags,
+    resources: &[impl MemoryResource],
+) -> Result<vk::DeviceMemory> {
+    let mut total = vk::MemoryRequirements::default();
+    let mut offsets = Vec::with_capacity(resources.len());
+    for resource in resources {
+        let reqs = resource.get_memory_requirements(device);
+        let offset = align(total.size, reqs.alignment);
+        total.size += reqs.size;
+        total.memory_type_bits &= reqs.memory_type_bits;
+        offsets.push(offset);
+    }
+    let ty = find_memory_type(props, total.memory_type_bits, flags)
+        .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
+    let memory = if resources.len() == 1 {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::builder()
+                .allocation_size(total.size)
+                .memory_type_index(ty)
+                .push_next(&mut resources[0].memory_dedicated_allocate_info()),
+            None,
+        )
+    } else {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::builder()
+                .allocation_size(total.size)
+                .memory_type_index(ty),
+            None,
+        )
+    }?;
+    for (resource, offset) in resources.iter().zip(offsets) {
+        resource.bind_memory(device, memory, offset)?;
+    }
+    Ok(memory)
+}
+
+/// Resources that can be bound to a `vk::DeviceMemory`
+pub trait MemoryResource: Copy {
+    unsafe fn get_memory_requirements(self, device: &Device) -> vk::MemoryRequirements;
+    unsafe fn bind_memory(
+        self,
+        device: &Device,
+        memory: vk::DeviceMemory,
+        offset: vk::DeviceSize,
+    ) -> Result<()>;
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo;
+}
+
+impl MemoryResource for vk::Buffer {
+    #[inline]
+    unsafe fn get_memory_requirements(self, device: &Device) -> vk::MemoryRequirements {
+        device.get_buffer_memory_requirements(self)
+    }
+
+    #[inline]
+    unsafe fn bind_memory(
+        self,
+        device: &Device,
+        memory: vk::DeviceMemory,
+        offset: vk::DeviceSize,
+    ) -> Result<()> {
+        device.bind_buffer_memory(self, memory, offset)
+    }
+
+    #[inline]
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo {
+        vk::MemoryDedicatedAllocateInfo {
+            buffer: self,
+            ..Default::default()
+        }
+    }
+}
+
+impl MemoryResource for vk::Image {
+    #[inline]
+    unsafe fn get_memory_requirements(self, device: &Device) -> vk::MemoryRequirements {
+        device.get_image_memory_requirements(self)
+    }
+
+    #[inline]
+    unsafe fn bind_memory(
+        self,
+        device: &Device,
+        memory: vk::DeviceMemory,
+        offset: vk::DeviceSize,
+    ) -> Result<()> {
+        device.bind_image_memory(self, memory, offset)
+    }
+
+    #[inline]
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo {
+        vk::MemoryDedicatedAllocateInfo {
+            image: self,
+            ..Default::default()
+        }
+    }
+}
+
 pub fn find_memory_type(
     props: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
@@ -411,4 +514,15 @@ pub fn find_memory_type(
         }
     }
     None
+}
+
+/// Round `offset` up to the next multiple of `alignment`
+pub fn align(offset: u64, alignment: u64) -> u64 {
+    let misalignment = offset % alignment;
+    let padding = if misalignment == 0 {
+        0
+    } else {
+        alignment - misalignment
+    };
+    offset + padding
 }
