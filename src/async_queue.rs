@@ -1,7 +1,10 @@
 use std::{
     collections::VecDeque,
     fmt, mem,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use ash::{
@@ -53,6 +56,7 @@ impl AsyncQueue {
                 dead: false,
             }),
             highest_batch_sent: Mutex::new(0),
+            refcount: AtomicU64::new(0),
         });
         Ok((
             Self {
@@ -70,14 +74,14 @@ impl AsyncQueue {
     ///
     /// Convenient for use in a dedicated background thread, driving a dedicated queue.
     pub unsafe fn run(mut self, device: &Device) {
-        while Arc::get_mut(&mut self.shared).is_none() {
+        while self.shared.refcount.load(Ordering::Relaxed) != 0 {
             device
                 .wait_semaphores(
                     &vk::SemaphoreWaitInfo::builder()
                         .flags(vk::SemaphoreWaitFlags::ANY)
                         .semaphores(&[self.shared.batches_complete, self.shared.batch_available])
                         .values(&[self.batches_completed + 1, self.batches_received + 1]),
-                    !0,
+                    u64::MAX,
                 )
                 .unwrap();
             self.drive(device);
@@ -188,6 +192,7 @@ struct Shared {
     // be able to release that lock before waking the background thread, thereby avoiding
     // contention.
     highest_batch_sent: Mutex<u64>,
+    refcount: AtomicU64,
 }
 
 struct PendingBatch {
@@ -251,6 +256,7 @@ impl Handle {
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )
             .unwrap();
+        shared.refcount.fetch_add(1, Ordering::Relaxed);
 
         Self {
             cmd_pool,
@@ -384,6 +390,19 @@ impl Handle {
         }
         device.destroy_command_pool(self.cmd_pool, None);
         self.cmd = vk::CommandBuffer::null();
+
+        let prev = self.shared.refcount.fetch_sub(1, Ordering::Relaxed);
+        if prev == 1 {
+            // Last handle destroyed; notify driver to exit
+            let highest_batch_sent = *self.shared.highest_batch_sent.lock().unwrap();
+            device
+                .signal_semaphore(&vk::SemaphoreSignalInfo {
+                    semaphore: self.shared.batch_available,
+                    value: highest_batch_sent + 1,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
     }
 }
 
