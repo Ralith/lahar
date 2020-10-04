@@ -95,11 +95,28 @@ impl AsyncQueue {
     /// queue is not available.
     pub unsafe fn drive(&mut self, device: &Device) {
         self.submit_work(device);
-
-        // Broadcast completions
         let completed = device
             .get_semaphore_counter_value(self.shared.batches_complete)
             .unwrap();
+        self.broadcast_completions(completed);
+    }
+
+    /// Wait for all previously submitted work to complete
+    pub unsafe fn wait_idle(&mut self, device: &Device) {
+        self.submit_work(device);
+        device
+            .wait_semaphores(
+                &vk::SemaphoreWaitInfo::builder()
+                    .flags(vk::SemaphoreWaitFlags::ANY)
+                    .semaphores(&[self.shared.batches_complete])
+                    .values(&[self.batches_received]),
+                u64::MAX,
+            )
+            .unwrap();
+        self.broadcast_completions(self.batches_received);
+    }
+
+    fn broadcast_completions(&mut self, completed: u64) {
         let newly_completed = (completed - self.batches_completed) as usize;
         self.batches_completed = completed;
         for event in self.in_flight.drain(0..newly_completed) {
@@ -413,6 +430,13 @@ impl Handle {
                 })
                 .unwrap();
         }
+    }
+
+    /// Pool all this handle's command buffers are allocated from
+    ///
+    /// Exposed for debug utils convenience
+    pub fn cmd_pool(&self) -> vk::CommandPool {
+        self.cmd_pool
     }
 }
 
