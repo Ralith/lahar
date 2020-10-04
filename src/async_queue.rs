@@ -31,7 +31,7 @@ impl AsyncQueue {
         device: &Device,
         queue_family: u32,
         queue: vk::Queue,
-    ) -> VkResult<(Self, Handle)> {
+    ) -> VkResult<(Self, HandleSeed)> {
         let batches_complete = device.create_semaphore(
             &vk::SemaphoreCreateInfo::builder().push_next(
                 &mut vk::SemaphoreTypeCreateInfo::builder()
@@ -66,7 +66,7 @@ impl AsyncQueue {
                 batches_received: 0,
                 batches_completed: 0,
             },
-            Handle::new(shared, device),
+            HandleSeed(shared),
         ))
     }
 
@@ -213,6 +213,16 @@ impl Batch {
             cmds: Vec::new(),
             event: Arc::new(ManualResetEvent::new(false)),
         }
+    }
+}
+
+/// Used to construct `Handle`s.
+#[derive(Clone)]
+pub struct HandleSeed(Arc<Shared>);
+
+impl HandleSeed {
+    pub unsafe fn into_handle(self, device: &Device) -> Handle {
+        Handle::new(self.0, device)
     }
 }
 
