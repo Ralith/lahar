@@ -25,12 +25,14 @@ struct State {
 impl StagingBuffer {
     pub fn new(
         device: Arc<Device>,
+        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: usize,
     ) -> Self {
         let buffer = unsafe {
             DedicatedMapping::zeroed_array(
                 &*device,
+                non_coherent_atom_size,
                 props,
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 capacity,
