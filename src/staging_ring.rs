@@ -11,7 +11,7 @@ use crate::DedicatedMapping;
 ///
 /// Best for transient uses like streaming transfers. Retaining an allocation of any size will block
 /// future allocations once the buffer wraps back aground.
-pub struct StagingBuffer {
+pub struct StagingRing {
     device: Arc<Device>,
     buffer: DedicatedMapping<[u8]>,
     state: Mutex<State>,
@@ -22,7 +22,7 @@ struct State {
     alloc: RingAlloc,
 }
 
-impl StagingBuffer {
+impl StagingRing {
     pub fn new(
         device: Arc<Device>,
         non_coherent_atom_size: vk::DeviceSize,
@@ -105,7 +105,7 @@ impl StagingBuffer {
     }
 }
 
-impl Drop for StagingBuffer {
+impl Drop for StagingRing {
     fn drop(&mut self) {
         unsafe {
             self.buffer.destroy(&*self.device);
@@ -113,9 +113,9 @@ impl Drop for StagingBuffer {
     }
 }
 
-/// An allocation from a `StagingBuffer`
+/// An allocation from a `StagingRing`
 pub struct Alloc<'a> {
-    buf: &'a StagingBuffer,
+    buf: &'a StagingRing,
     bytes: &'a mut [u8],
     id: ring_alloc::Id,
 }

@@ -1,7 +1,7 @@
 //! Tools for asynchronous Vulkan
 
 pub mod async_queue;
-pub mod staging;
+pub mod staging_ring;
 
 mod memory;
 mod region;
@@ -12,4 +12,4 @@ pub use memory::{
     align, alloc_bind, DedicatedBuffer, DedicatedImage, DedicatedMapping, MemoryResource, Staged,
 };
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
-pub use staging::StagingBuffer;
+pub use staging_ring::StagingRing;
