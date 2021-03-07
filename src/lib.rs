@@ -2,6 +2,7 @@
 
 pub mod async_queue;
 pub mod staging_ring;
+pub mod staging_arena;
 
 mod memory;
 mod region;
@@ -13,3 +14,4 @@ pub use memory::{
 };
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging_ring::StagingRing;
+pub use staging_arena::StagingArena;
