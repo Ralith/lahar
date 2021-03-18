@@ -8,6 +8,8 @@ use ash::prelude::VkResult as Result;
 use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
+use crate::graveyard::DeferredCleanup;
+
 /// Helper for repeatedly copying fixed-size data into the same GPU buffer
 pub struct Staged<T: Copy> {
     // Future work: Only allocate two buffers if non-host-visible memory exists
@@ -378,6 +380,13 @@ impl DedicatedBuffer {
     pub unsafe fn destroy(&mut self, device: &Device) {
         device.destroy_buffer(self.handle, None);
         device.free_memory(self.memory, None);
+    }
+}
+
+impl DeferredCleanup for DedicatedBuffer {
+    fn push_resources(&self, frame: &mut crate::graveyard::Frame) {
+        frame.push_memories(&[self.memory]);
+        frame.push_buffers(&[self.handle]);
     }
 }
 

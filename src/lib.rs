@@ -2,6 +2,7 @@
 
 pub mod async_queue;
 pub mod staging_ring;
+pub mod graveyard;
 pub mod staging_arena;
 
 mod memory;
@@ -9,6 +10,7 @@ mod region;
 mod ring_alloc;
 
 pub use async_queue::AsyncQueue;
+pub use graveyard::Graveyard;
 pub use memory::{
     align, alloc_bind, DedicatedBuffer, DedicatedImage, DedicatedMapping, MemoryResource, Staged,
 };
