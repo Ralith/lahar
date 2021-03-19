@@ -46,9 +46,9 @@ impl Graveyard {
         }
     }
 
-    /// Free the resources in `resources` after `depth` frames
-    pub fn inter(&mut self, resource: &impl DeferredCleanup) {
-        resource.push_resources(&mut self.frames[self.cursor]);
+    /// Free the resources in `resources` after `self.depth()` frames
+    pub fn inter(&mut self, resource: impl DeferredCleanup) {
+        resource.inter_into(self);
     }
 
     /// Free all resources immediately
@@ -61,56 +61,37 @@ impl Graveyard {
 
 /// Owners of Vulkan resources
 pub trait DeferredCleanup {
-    /// Record all owned resources in `frame`
-    fn push_resources(&self, frame: &mut Frame);
+    fn inter_into(self, graveyard: &mut Graveyard);
 }
 
 impl DeferredCleanup for vk::Buffer {
-    fn push_resources(&self, frame: &mut Frame) {
-        frame.push_buffers(&[*self]);
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.frames[graveyard.cursor].buffers.push(self);
     }
 }
 
 impl DeferredCleanup for vk::Image {
-    fn push_resources(&self, frame: &mut Frame) {
-        frame.push_images(&[*self]);
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.frames[graveyard.cursor].images.push(self);
     }
 }
 
 impl DeferredCleanup for vk::ImageView {
-    fn push_resources(&self, frame: &mut Frame) {
-        frame.push_image_views(&[*self]);
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.frames[graveyard.cursor].image_views.push(self);
     }
 }
 
 impl DeferredCleanup for vk::DeviceMemory {
-    fn push_resources(&self, frame: &mut Frame) {
-        frame.push_memories(&[*self]);
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.frames[graveyard.cursor].memories.push(self);
     }
 }
 
 /// A collection of resources to be freed in the future
-pub struct Frame {
+struct Frame {
     buffers: Vec<vk::Buffer>,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
     memories: Vec<vk::DeviceMemory>,
-}
-
-impl Frame {
-    pub fn push_buffers(&mut self, buffers: &[vk::Buffer]) {
-        self.buffers.extend_from_slice(buffers);
-    }
-
-    pub fn push_images(&mut self, images: &[vk::Image]) {
-        self.images.extend_from_slice(images);
-    }
-
-    pub fn push_image_views(&mut self, image_views: &[vk::ImageView]) {
-        self.image_views.extend_from_slice(image_views);
-    }
-
-    pub fn push_memories(&mut self, memories: &[vk::DeviceMemory]) {
-        self.memories.extend_from_slice(memories);
-    }
 }

@@ -8,7 +8,7 @@ use ash::prelude::VkResult as Result;
 use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
-use crate::graveyard::DeferredCleanup;
+use crate::graveyard::{DeferredCleanup, Graveyard};
 
 /// Helper for repeatedly copying fixed-size data into the same GPU buffer
 pub struct Staged<T: Copy> {
@@ -384,9 +384,9 @@ impl DedicatedBuffer {
 }
 
 impl DeferredCleanup for DedicatedBuffer {
-    fn push_resources(&self, frame: &mut crate::graveyard::Frame) {
-        frame.push_memories(&[self.memory]);
-        frame.push_buffers(&[self.handle]);
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.inter(self.memory);
+        graveyard.inter(self.handle);
     }
 }
 
