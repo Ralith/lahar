@@ -430,6 +430,13 @@ impl DedicatedImage {
     }
 }
 
+impl DeferredCleanup for DedicatedImage {
+    fn inter_into(self, graveyard: &mut Graveyard) {
+        graveyard.inter(self.memory);
+        graveyard.inter(self.handle);
+    }
+}
+
 /// Allocate and bind memory for use by one or more buffers
 pub unsafe fn alloc_bind(
     device: &Device,
