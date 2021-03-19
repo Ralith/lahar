@@ -53,16 +53,25 @@ impl StagingArena {
     }
 
     /// Get the storage for an allocation
-    pub unsafe fn get_mut(&mut self, alloc: &Alloc) -> &mut [u8] {
+    pub unsafe fn get_mut(&mut self, alloc: &Alloc) -> &mut [mem::MaybeUninit<u8>] {
         for mem in Some(&self.mem).into_iter().chain(self.old.iter().rev()) {
             if alloc.buffer == mem.buffer.handle {
                 return slice::from_raw_parts_mut(
-                    mem.ptr.as_ptr().add(alloc.offset as usize),
+                    mem.ptr.as_ptr().add(alloc.offset as usize) as _,
                     alloc.size as usize,
                 );
             }
         }
         panic!("buffer does not exist in this arena");
+    }
+
+    /// Convenience method to copy a value into an allocation
+    pub unsafe fn write<T: ?Sized>(&mut self, alloc: &Alloc, src: &T) {
+        let mem = self.get_mut(alloc);
+        assert_eq!(mem.len(), mem::size_of_val(src), "size mismatch");
+        mem.as_mut_ptr()
+            .cast::<u8>()
+            .copy_from_nonoverlapping(src as *const T as *const u8, mem::size_of_val(src));
     }
 
     /// Invalidate all prior allocations
