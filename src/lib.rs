@@ -1,9 +1,9 @@
 //! Tools for asynchronous Vulkan
 
 pub mod async_queue;
-pub mod staging_ring;
 pub mod graveyard;
 pub mod staging_arena;
+pub mod staging_ring;
 
 mod memory;
 mod region;
@@ -15,5 +15,5 @@ pub use memory::{
     align, alloc_bind, DedicatedBuffer, DedicatedImage, DedicatedMapping, MemoryResource, Staged,
 };
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
-pub use staging_ring::StagingRing;
 pub use staging_arena::StagingArena;
+pub use staging_ring::StagingRing;
