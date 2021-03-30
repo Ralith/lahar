@@ -445,6 +445,7 @@ pub unsafe fn alloc_bind(
     resources: &[impl MemoryResource],
 ) -> Result<vk::DeviceMemory> {
     let mut total = vk::MemoryRequirements::default();
+    total.memory_type_bits = !0;
     let mut offsets = Vec::with_capacity(resources.len());
     for resource in resources {
         let reqs = resource.get_memory_requirements(device);
