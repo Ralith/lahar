@@ -30,7 +30,7 @@ impl Graveyard {
 
     /// Free resources from `depth` frames ago
     pub unsafe fn begin_frame(&mut self, device: &Device) {
-        self.cursor = self.cursor + 1 % self.frames.len();
+        self.cursor = (self.cursor + 1) % self.frames.len();
         let frame = &mut self.frames[self.cursor];
         for buffer in frame.buffers.drain(..) {
             device.destroy_buffer(buffer, None);
