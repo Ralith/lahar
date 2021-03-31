@@ -74,6 +74,13 @@ impl StagingArena {
             .copy_from_nonoverlapping(src as *const T as *const u8, mem::size_of_val(src));
     }
 
+    /// Convenience method for alloc followed by write
+    pub unsafe fn push<T: ?Sized>(&mut self, device: &Device, value: &T) -> Alloc {
+        let alloc = self.alloc(device, mem::size_of_val(value));
+        self.write(&alloc, value);
+        alloc
+    }
+
     /// Invalidate all prior allocations
     pub unsafe fn reset(&mut self, device: &Device) {
         self.cursor = 0;
