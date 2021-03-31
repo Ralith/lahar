@@ -25,14 +25,12 @@ struct State {
 impl StagingRing {
     pub fn new(
         device: Arc<Device>,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: usize,
     ) -> Self {
         let buffer = unsafe {
             DedicatedMapping::zeroed_array(
                 &*device,
-                non_coherent_atom_size,
                 props,
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 capacity,
@@ -128,16 +126,6 @@ impl Alloc<'_> {
 
     pub fn size(&self) -> vk::DeviceSize {
         self.bytes.len() as _
-    }
-
-    pub fn flush(&self, non_coherent_atom_size: vk::DeviceSize) {
-        unsafe {
-            self.buf.buffer.flush_elts(
-                &self.buf.device,
-                non_coherent_atom_size,
-                self.offset() as usize..(self.offset() + self.size()) as usize,
-            );
-        }
     }
 }
 

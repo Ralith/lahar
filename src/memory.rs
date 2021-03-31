@@ -1,7 +1,7 @@
 //! Primitive synchronous allocation helpers
 
 use std::mem::{self, MaybeUninit};
-use std::ops::{Bound, Deref, DerefMut, RangeBounds};
+use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
 use ash::prelude::VkResult as Result;
@@ -20,7 +20,6 @@ pub struct Staged<T: Copy> {
 impl<T: Copy> Staged<T> {
     pub unsafe fn new(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
@@ -33,24 +32,12 @@ impl<T: Copy> Staged<T> {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
-        let staging = DedicatedMapping::uninit(
-            device,
-            non_coherent_atom_size,
-            props,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        );
+        let staging = DedicatedMapping::uninit(device, props, vk::BufferUsageFlags::TRANSFER_SRC);
         Self { buffer, staging }
     }
 
-    pub unsafe fn write(&mut self, device: &Device, x: T) {
+    pub unsafe fn write(&mut self, x: T) {
         ptr::write(self.staging.as_mut_ptr(), x);
-        device
-            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                .memory(self.staging.memory())
-                .offset(0)
-                .size(vk::WHOLE_SIZE)
-                .build()])
-            .unwrap();
     }
 
     pub unsafe fn record_transfer(&self, device: &Device, cmd: vk::CommandBuffer) {
@@ -91,42 +78,27 @@ impl<T> DedicatedMapping<T> {
     /// device's `minMemoryMapAlignment`.
     pub unsafe fn new(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         value: T,
     ) -> Self {
-        let mut x = DedicatedMapping::uninit(device, non_coherent_atom_size, props, usage);
+        let mut x = DedicatedMapping::uninit(device, props, usage);
         ptr::write(x.as_mut_ptr(), value);
         x.assume_init()
     }
 
     pub unsafe fn zeroed(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
-        Self::new(device, non_coherent_atom_size, props, usage, mem::zeroed())
-    }
-}
-
-impl<T: ?Sized> DedicatedMapping<T> {
-    pub unsafe fn flush(&self, device: &Device) {
-        device
-            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                .memory(self.memory())
-                .offset(0)
-                .size(vk::WHOLE_SIZE)
-                .build()])
-            .unwrap();
+        Self::new(device, props, usage, mem::zeroed())
     }
 }
 
 impl<T> DedicatedMapping<[T]> {
     pub unsafe fn from_iter<I>(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         values: I,
@@ -137,8 +109,7 @@ impl<T> DedicatedMapping<[T]> {
     {
         let mut values = values.into_iter();
         let len = values.len();
-        let mut x =
-            DedicatedMapping::uninit_array(device, non_coherent_atom_size, props, usage, len);
+        let mut x = DedicatedMapping::uninit_array(device, props, usage, len);
         let mut i = 0;
         while let Some(value) = values.next() {
             if i >= len {
@@ -155,7 +126,6 @@ impl<T> DedicatedMapping<[T]> {
 
     pub unsafe fn from_slice(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         values: &[T],
@@ -163,76 +133,28 @@ impl<T> DedicatedMapping<[T]> {
     where
         T: Copy,
     {
-        let mut x = DedicatedMapping::uninit_array(
-            device,
-            non_coherent_atom_size,
-            props,
-            usage,
-            values.len(),
-        );
+        let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
         ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
         x.assume_init()
     }
 
     pub unsafe fn zeroed_array(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         size: usize,
     ) -> Self {
-        let mut x =
-            DedicatedMapping::uninit_array(device, non_coherent_atom_size, props, usage, size);
+        let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
         for elt in &mut *x {
             ptr::write(elt.as_mut_ptr(), mem::zeroed());
         }
         x.assume_init()
-    }
-
-    pub unsafe fn flush_elts(
-        &self,
-        device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
-        range: impl RangeBounds<usize>,
-    ) {
-        use Bound::*;
-        let first = match range.start_bound() {
-            Included(&x) => x as vk::DeviceSize,
-            Excluded(&x) => x as vk::DeviceSize + 1,
-            Unbounded => 0,
-        };
-        let raw_offset = first * mem::size_of::<T>() as vk::DeviceSize;
-        // Round down to first preceding non-coherent atom
-        let rounded_offset = (raw_offset / non_coherent_atom_size) * non_coherent_atom_size;
-        let prefix = raw_offset - rounded_offset;
-        let mut size = match range.end_bound() {
-            Included(&x) => {
-                prefix + mem::size_of::<T>() as vk::DeviceSize * (x as vk::DeviceSize - first + 1)
-            }
-            Excluded(&x) => {
-                prefix + mem::size_of::<T>() as vk::DeviceSize * (x as vk::DeviceSize - first)
-            }
-            Unbounded => vk::WHOLE_SIZE,
-        };
-        if size != vk::WHOLE_SIZE {
-            // Round up to the end of the non-coherent atom
-            size = ((size + non_coherent_atom_size - 1) / non_coherent_atom_size)
-                * non_coherent_atom_size;
-        }
-        device
-            .flush_mapped_memory_ranges(&[vk::MappedMemoryRange::builder()
-                .memory(self.memory())
-                .offset(rounded_offset)
-                .size(size)
-                .build()])
-            .unwrap();
     }
 }
 
 impl<T> DedicatedMapping<MaybeUninit<T>> {
     pub unsafe fn uninit(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
@@ -240,10 +162,10 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
             device,
             props,
             &vk::BufferCreateInfo::builder()
-                .size(align(mem::size_of::<T>() as _, non_coherent_atom_size))
+                .size(mem::size_of::<T>() as _)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         let ptr = NonNull::new_unchecked(
             device
@@ -270,7 +192,6 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
 impl<T> DedicatedMapping<[MaybeUninit<T>]> {
     pub unsafe fn uninit_array(
         device: &Device,
-        non_coherent_atom_size: vk::DeviceSize,
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
         size: usize,
@@ -279,13 +200,10 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
             device,
             props,
             &vk::BufferCreateInfo::builder()
-                .size(align(
-                    (size * mem::size_of::<T>()) as vk::DeviceSize,
-                    non_coherent_atom_size,
-                ))
+                .size((size * mem::size_of::<T>()) as vk::DeviceSize)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         let ptr = std::slice::from_raw_parts_mut(
             device
