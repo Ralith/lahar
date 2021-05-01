@@ -8,4 +8,4 @@ readme = "README.md"
 
 [dependencies]
 ash = "0.31"
-futures-intrusive = "0.3.1"
+futures-intrusive = "0.4"
