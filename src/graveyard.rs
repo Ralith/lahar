@@ -1,4 +1,4 @@
-use ash::{version::DeviceV1_0, vk, Device};
+use ash::{version::DeviceV1_0, vk, vk::Handle, Device};
 
 /// Helper for deferred destruction of resources used within a frame
 pub struct Graveyard {
@@ -12,10 +12,7 @@ impl Graveyard {
         Self {
             frames: (0..depth)
                 .map(|_| Frame {
-                    buffers: Vec::new(),
-                    images: Vec::new(),
-                    image_views: Vec::new(),
-                    memories: Vec::new(),
+                    handles: Vec::new(),
                 })
                 .collect(),
             cursor: 0,
@@ -32,17 +29,8 @@ impl Graveyard {
     pub unsafe fn begin_frame(&mut self, device: &Device) {
         self.cursor = (self.cursor + 1) % self.frames.len();
         let frame = &mut self.frames[self.cursor];
-        for buffer in frame.buffers.drain(..) {
-            device.destroy_buffer(buffer, None);
-        }
-        for image in frame.images.drain(..) {
-            device.destroy_image(image, None);
-        }
-        for image_view in frame.image_views.drain(..) {
-            device.destroy_image_view(image_view, None);
-        }
-        for memory in frame.memories.drain(..) {
-            device.free_memory(memory, None);
+        for (ty, handle) in frame.handles.drain(..) {
+            destroy(device, ty, handle);
         }
     }
 
@@ -64,34 +52,44 @@ pub trait DeferredCleanup {
     fn inter_into(self, graveyard: &mut Graveyard);
 }
 
-impl DeferredCleanup for vk::Buffer {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.frames[graveyard.cursor].buffers.push(self);
-    }
+macro_rules! impl_handles {
+    ( $($ty:ident,)* ) => {
+        $(
+            impl DeferredCleanup for vk::$ty {
+                fn inter_into(self, graveyard: &mut Graveyard) {
+                    graveyard.frames[graveyard.cursor].push(self);
+                }
+            }
+        )*
+    };
 }
 
-impl DeferredCleanup for vk::Image {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.frames[graveyard.cursor].images.push(self);
-    }
-}
-
-impl DeferredCleanup for vk::ImageView {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.frames[graveyard.cursor].image_views.push(self);
-    }
-}
-
-impl DeferredCleanup for vk::DeviceMemory {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.frames[graveyard.cursor].memories.push(self);
-    }
-}
+impl_handles!(Buffer, Image, ImageView, DeviceMemory, Framebuffer,);
 
 /// A collection of resources to be freed in the future
 struct Frame {
-    buffers: Vec<vk::Buffer>,
-    images: Vec<vk::Image>,
-    image_views: Vec<vk::ImageView>,
-    memories: Vec<vk::DeviceMemory>,
+    handles: Vec<(vk::ObjectType, u64)>,
+}
+
+impl Frame {
+    fn push<T: Handle>(&mut self, handle: T) {
+        self.handles.push((T::TYPE, handle.as_raw()));
+    }
+}
+
+unsafe fn destroy(device: &Device, ty: vk::ObjectType, handle: u64) {
+    match ty {
+        vk::ObjectType::BUFFER => device.destroy_buffer(vk::Buffer::from_raw(handle), None),
+        vk::ObjectType::IMAGE => device.destroy_image(vk::Image::from_raw(handle), None),
+        vk::ObjectType::IMAGE_VIEW => {
+            device.destroy_image_view(vk::ImageView::from_raw(handle), None)
+        }
+        vk::ObjectType::DEVICE_MEMORY => {
+            device.free_memory(vk::DeviceMemory::from_raw(handle), None)
+        }
+        vk::ObjectType::FRAMEBUFFER => {
+            device.destroy_framebuffer(vk::Framebuffer::from_raw(handle), None)
+        }
+        _ => unimplemented!("cannot destroy {:?} handles", ty),
+    }
 }
