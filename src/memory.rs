@@ -368,7 +368,7 @@ pub unsafe fn alloc_bind(
     for resource in resources {
         let reqs = resource.get_memory_requirements(device);
         let offset = align(total.size, reqs.alignment);
-        total.size += reqs.size;
+        total.size = offset + reqs.size;
         total.memory_type_bits &= reqs.memory_type_bits;
         offsets.push(offset);
     }
