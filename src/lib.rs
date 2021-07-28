@@ -12,7 +12,8 @@ mod ring_alloc;
 pub use async_queue::AsyncQueue;
 pub use graveyard::Graveyard;
 pub use memory::{
-    align, alloc_bind, DedicatedBuffer, DedicatedImage, DedicatedMapping, MemoryResource, Staged,
+    align, alloc_bind, find_memory_type, DedicatedBuffer, DedicatedImage, DedicatedMapping,
+    MemoryResource, Staged,
 };
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging_arena::StagingArena;
