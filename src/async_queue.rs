@@ -7,11 +7,7 @@ use std::{
     },
 };
 
-use ash::{
-    prelude::VkResult,
-    version::{DeviceV1_0, DeviceV1_2},
-    vk, Device,
-};
+use ash::{prelude::VkResult, vk, Device};
 use futures_intrusive::sync::ManualResetEvent;
 
 /// Helper for running Vulkan commands asynchronously

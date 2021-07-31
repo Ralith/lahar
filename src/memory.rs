@@ -5,7 +5,6 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
 use ash::prelude::VkResult as Result;
-use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
 use crate::graveyard::{DeferredCleanup, Graveyard};

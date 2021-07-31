@@ -1,4 +1,4 @@
-use ash::{version::DeviceV1_0, vk, vk::Handle, Device};
+use ash::{vk, vk::Handle, Device};
 
 /// Helper for deferred destruction of resources used within a frame
 pub struct Graveyard {

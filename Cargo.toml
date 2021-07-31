@@ -7,5 +7,5 @@ description = "Futures support for Vulkan"
 readme = "README.md"
 
 [dependencies]
-ash = "0.31"
+ash = { version = "0.33", default-features = false }
 futures-intrusive = "0.4"

@@ -1,6 +1,6 @@
 use std::{mem, ptr::NonNull, slice};
 
-use ash::{version::DeviceV1_0, vk, Device};
+use ash::{vk, Device};
 
 use crate::DedicatedBuffer;
 

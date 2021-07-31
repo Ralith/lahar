@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use ash::version::DeviceV1_0;
 use ash::{vk, Device};
 
 use crate::memory::find_memory_type;
