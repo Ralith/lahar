@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ash::{vk, Device};
 
 use crate::memory::find_memory_type;
@@ -12,7 +10,7 @@ pub struct BufferRegion {
 
 impl BufferRegion {
     pub unsafe fn new(
-        device: Arc<Device>,
+        device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
@@ -35,15 +33,20 @@ impl BufferRegion {
         )
         .expect("vulkan guarantees a device local memory type exists");
         Self {
-            inner: Region::new(device, memory_type_index, capacity),
+            inner: Region::new(memory_type_index, capacity),
             usage,
         }
     }
 
     /// Allocate `size` bytes positioned at a multiple of `alignment`
-    pub fn alloc(&mut self, size: vk::DeviceSize, alignment: vk::DeviceSize) -> BufferRegionAlloc {
+    pub fn alloc(
+        &mut self,
+        device: &Device,
+        size: vk::DeviceSize,
+        alignment: vk::DeviceSize,
+    ) -> BufferRegionAlloc {
         if !self.inner.has_capacity_for(size) {
-            self.grow(size);
+            self.grow(device, size);
         }
 
         let offset = self.inner.alloc(size, alignment);
@@ -63,9 +66,8 @@ impl BufferRegion {
         self.inner.wasted
     }
 
-    fn grow(&mut self, minimum_size: vk::DeviceSize) {
+    fn grow(&mut self, device: &Device, minimum_size: vk::DeviceSize) {
         let size = self.inner.next_chunk_size(minimum_size);
-        let device = &self.inner.device;
         unsafe {
             let handle = device
                 .create_buffer(
@@ -76,7 +78,7 @@ impl BufferRegion {
                     None,
                 )
                 .unwrap();
-            let reqs = self.inner.device.get_buffer_memory_requirements(handle);
+            let reqs = device.get_buffer_memory_requirements(handle);
             let memory = device
                 .allocate_memory(
                     &vk::MemoryAllocateInfo::builder()
@@ -90,15 +92,12 @@ impl BufferRegion {
             self.inner.grow(Chunk { handle, memory }, size);
         }
     }
-}
 
-impl Drop for BufferRegion {
-    fn drop(&mut self) {
+    pub unsafe fn destroy(&mut self, device: &Device) {
         for chunk in &self.inner.chunks {
-            unsafe {
-                self.inner.device.destroy_buffer(chunk.handle, None);
-            }
+            device.destroy_buffer(chunk.handle, None);
         }
+        self.inner.destroy(device);
     }
 }
 
@@ -115,7 +114,7 @@ pub struct ImageRegion {
 
 impl ImageRegion {
     pub unsafe fn new(
-        device: Arc<Device>,
+        device: &Device,
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: vk::DeviceSize,
     ) -> Self {
@@ -144,7 +143,7 @@ impl ImageRegion {
         )
         .expect("vulkan guarantees a device local memory type exists");
         Self {
-            inner: Region::new(device, memory_type_index, capacity),
+            inner: Region::new(memory_type_index, capacity),
         }
     }
 
@@ -152,7 +151,7 @@ impl ImageRegion {
     ///
     /// The caller is responsible for freeing the `vk::Image`. `info.format` must not be a depth or
     /// stencil format.
-    pub unsafe fn alloc(&mut self, info: &vk::ImageCreateInfo) -> vk::Image {
+    pub unsafe fn alloc(&mut self, device: &Device, info: &vk::ImageCreateInfo) -> vk::Image {
         debug_assert!(![
             vk::Format::D16_UNORM,
             vk::Format::X8_D24_UNORM_PACK32,
@@ -163,14 +162,13 @@ impl ImageRegion {
             vk::Format::D32_SFLOAT_S8_UINT
         ]
         .contains(&info.format));
-        let handle = self.inner.device.create_image(info, None).unwrap();
-        let reqs = self.inner.device.get_image_memory_requirements(handle);
+        let handle = device.create_image(info, None).unwrap();
+        let reqs = device.get_image_memory_requirements(handle);
         if !self.inner.has_capacity_for(reqs.size) {
-            self.grow(reqs.size);
+            self.grow(device, reqs.size);
         }
         let offset = self.inner.alloc(reqs.size, reqs.alignment);
-        self.inner
-            .device
+        device
             .bind_image_memory(handle, self.inner.chunks.last().unwrap().memory, offset)
             .unwrap();
         handle
@@ -186,26 +184,25 @@ impl ImageRegion {
         self.inner.wasted
     }
 
-    fn grow(&mut self, minimum_size: vk::DeviceSize) {
+    unsafe fn grow(&mut self, device: &Device, minimum_size: vk::DeviceSize) {
         let size = self.inner.next_chunk_size(minimum_size);
-        unsafe {
-            let memory = self
-                .inner
-                .device
-                .allocate_memory(
-                    &vk::MemoryAllocateInfo::builder()
-                        .allocation_size(size)
-                        .memory_type_index(self.inner.memory_type_index),
-                    None,
-                )
-                .unwrap();
-            self.inner.grow(Chunk { handle: (), memory }, size);
-        }
+        let memory = device
+            .allocate_memory(
+                &vk::MemoryAllocateInfo::builder()
+                    .allocation_size(size)
+                    .memory_type_index(self.inner.memory_type_index),
+                None,
+            )
+            .unwrap();
+        self.inner.grow(Chunk { handle: (), memory }, size);
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        self.inner.destroy(device);
     }
 }
 
 struct Region<T> {
-    device: Arc<Device>,
     capacity: vk::DeviceSize,
     memory_type_index: u32,
     chunks: Vec<Chunk<T>>,
@@ -215,9 +212,8 @@ struct Region<T> {
 }
 
 impl<T> Region<T> {
-    unsafe fn new(device: Arc<Device>, memory_type_index: u32, capacity: vk::DeviceSize) -> Self {
+    unsafe fn new(memory_type_index: u32, capacity: vk::DeviceSize) -> Self {
         Self {
-            device,
             capacity,
             memory_type_index,
             chunks: Vec::new(),
@@ -251,14 +247,10 @@ impl<T> Region<T> {
     fn next_chunk_size(&self, alloc_size: vk::DeviceSize) -> vk::DeviceSize {
         self.capacity.max(alloc_size) * 2
     }
-}
 
-impl<T> Drop for Region<T> {
-    fn drop(&mut self) {
+    unsafe fn destroy(&mut self, device: &Device) {
         for chunk in &self.chunks {
-            unsafe {
-                self.device.free_memory(chunk.memory, None);
-            }
+            device.free_memory(chunk.memory, None);
         }
     }
 }
