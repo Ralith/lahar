@@ -130,7 +130,8 @@ impl ImageRegion {
                     })
                     .mip_levels(1)
                     .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1),
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .usage(vk::ImageUsageFlags::SAMPLED), // Aside from transient-ness, memory requirements are the same for any usage
                 None,
             )
             .unwrap();
