@@ -3,9 +3,8 @@ name = "lahar"
 version = "0.1.0"
 authors = ["Benjamin Saunders <ben.e.saunders@gmail.com>"]
 edition = "2018"
-description = "Futures support for Vulkan"
+description = "Vulkan helpers"
 readme = "README.md"
 
 [dependencies]
 ash = { version = "0.35", default-features = false }
-futures-intrusive = "0.4"

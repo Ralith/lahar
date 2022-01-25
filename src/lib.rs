@@ -1,20 +1,19 @@
 //! Tools for asynchronous Vulkan
 
-pub mod async_queue;
 pub mod graveyard;
+pub mod parallel_queue;
 pub mod staging_arena;
-pub mod staging_ring;
 
 mod memory;
 mod region;
-mod ring_alloc;
+mod timeline_ring;
 
-pub use async_queue::AsyncQueue;
 pub use graveyard::Graveyard;
 pub use memory::{
     align, alloc_bind, find_memory_type, DedicatedBuffer, DedicatedImage, DedicatedMapping,
     MemoryResource, Staged,
 };
+pub use parallel_queue::ParallelQueue;
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging_arena::StagingArena;
-pub use staging_ring::StagingRing;
+pub use timeline_ring::TimelineRing;
