@@ -37,13 +37,13 @@ impl TimelineRing {
                 free_at,
                 offset: self.head,
             });
-            return Some(self.head);
+            Some(self.head)
         } else {
             // Try allocating between head and 0
             if self.head >= size {
                 // Aligning is guaranteed to be feasible, since 0 is always aligned
-                self.head = self.head - size;
-                self.head = self.head - self.head % align;
+                self.head -= size;
+                self.head -= self.head % align;
                 self.allocations.push_back(Alloc {
                     free_at,
                     offset: self.head,
@@ -61,7 +61,7 @@ impl TimelineRing {
                 free_at,
                 offset: self.head,
             });
-            return Some(self.head);
+            Some(self.head)
         }
     }
 
@@ -82,11 +82,7 @@ impl TimelineRing {
     /// freed
     pub fn tick(&mut self, time: u64) -> bool {
         let alloc_count = self.allocations.len();
-        loop {
-            let alloc = match self.allocations.front() {
-                Some(&x) => x,
-                None => break,
-            };
+        while let Some(&alloc) = self.allocations.front() {
             if alloc.free_at > time {
                 break;
             }

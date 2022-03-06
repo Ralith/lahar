@@ -106,11 +106,11 @@ impl<T> DedicatedMapping<[T]> {
         I: IntoIterator<Item = T>,
         I::IntoIter: ExactSizeIterator,
     {
-        let mut values = values.into_iter();
+        let values = values.into_iter();
         let len = values.len();
         let mut x = DedicatedMapping::uninit_array(device, props, usage, len);
         let mut i = 0;
-        while let Some(value) = values.next() {
+        for value in values {
             if i >= len {
                 panic!("iterator length grew unexpectedy");
             }
