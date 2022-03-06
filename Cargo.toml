@@ -7,4 +7,4 @@ description = "Vulkan helpers"
 readme = "README.md"
 
 [dependencies]
-ash = { version = "0.35", default-features = false }
+ash = { version = "0.36", default-features = false }
