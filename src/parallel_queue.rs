@@ -134,9 +134,9 @@ impl ParallelQueue {
         complete
     }
 
-    /// Wait until all work begun so far is complete
+    /// Wait until all work submitted so far is complete
     ///
-    /// Does not wait for work begun during the call.
+    /// Does not wait for work that has been allocated but not submitted.
     ///
     /// # Safety
     ///
@@ -147,10 +147,11 @@ impl ParallelQueue {
             .wait_semaphores(
                 &vk::SemaphoreWaitInfo::builder()
                     .semaphores(&[self.shared.semaphore])
-                    .values(&[self.shared.first_unallocated.load(Ordering::Relaxed) - 1]),
+                    .values(&[self.first_unsubmitted - 1]),
                 !0,
             )
             .unwrap();
+        self.first_unsignaled = self.first_unsubmitted;
     }
 }
 
@@ -316,6 +317,8 @@ impl Handle {
         device.end_command_buffer(work.cmd).unwrap();
         self.send.send(work).unwrap();
     }
+
+    // TODO: `cancel`
 }
 
 unsafe impl Send for Handle {}
