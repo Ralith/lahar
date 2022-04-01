@@ -12,12 +12,12 @@ use ash::{vk, Device};
 
 pub struct ParallelQueue {
     shared: Arc<Shared>,
-    recv: mpsc::Receiver<Work>,
+    recv: mpsc::Receiver<Message>,
     /// The lowest value that will not be signaled by work submitted to the queue so far
     first_unsubmitted: u64,
     /// The lowest value not yet reached by the semaphore
     first_unsignaled: u64,
-    pending: BinaryHeap<Work>,
+    pending: BinaryHeap<Message>,
     queue: vk::Queue,
 }
 
@@ -83,10 +83,11 @@ impl ParallelQueue {
         while self
             .pending
             .peek()
-            .map_or(false, |work| work.time.get() == self.first_unsubmitted)
+            .map_or(false, |work| work.time().get() == self.first_unsubmitted)
         {
-            let work = self.pending.pop().unwrap();
-            cmds.push(work.cmd);
+            if let Message::Execute(work) = self.pending.pop().unwrap() {
+                cmds.push(work.cmd);
+            }
             self.first_unsubmitted += 1;
         }
         if cmds.is_empty() {
@@ -161,7 +162,7 @@ struct Shared {
     /// The lowest value that has not yet been associated with any work
     first_unallocated: AtomicU64,
     /// For cloning by handles. Could be simplified if `Sender` comes to implement `Sync`.
-    send: Mutex<mpsc::Sender<Work>>,
+    send: Mutex<mpsc::Sender<Message>>,
 }
 
 #[derive(Copy, Clone)]
@@ -172,26 +173,10 @@ pub struct Work {
     pub time: NonZeroU64,
 }
 
-impl Eq for Work {}
-
-impl PartialEq for Work {
-    fn eq(&self, other: &Self) -> bool {
-        self.time == other.time
-    }
-}
-
-impl Ord for Work {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.time.cmp(&other.time).reverse()
-    }
-}
-
-impl PartialOrd for Work {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
+/// Can be shared between threads, cloned, and used to construct `Handle`s
+///
+/// `Handle`s themselves do not implement `Sync`, so `HandleSeed`s can be more convenient to work
+/// with when setting up parallelism.
 #[derive(Clone)]
 pub struct HandleSeed(Arc<Shared>);
 
@@ -230,7 +215,7 @@ impl HandleSeed {
 }
 
 pub struct Handle {
-    send: mpsc::Sender<Work>,
+    send: mpsc::Sender<Message>,
     shared: Arc<Shared>,
     cmd_pool: vk::CommandPool,
     spare_cmds: Vec<vk::CommandBuffer>,
@@ -256,10 +241,10 @@ impl Handle {
         self.cmd_pool
     }
 
-    /// Begin recording commands
+    /// Obtain a command buffer that commands may be recorded into
     ///
-    /// Must be called before calls to `cmd()` or `time()`. `end()` must be called soon after to
-    /// avoid stalling the queue.
+    /// [`end`](Handle::end) or [`reset`](Handle::reset) must be called soon with the returned
+    /// [`Work`] to avoid stalling the queue.
     ///
     /// # Safety
     /// `device` must match that passed to [`ParallelQueue::new`]
@@ -312,13 +297,62 @@ impl Handle {
     /// Send recorded commands out for execution
     ///
     /// # Safety
-    /// `device` must match that passed to [`ParallelQueue::new`]
+    /// - `device` must match that passed to [`ParallelQueue::new`]
+    /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
+    ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
+    ///   [`reset`](Handle::reset)
     pub unsafe fn end(&mut self, device: &Device, work: Work) {
         device.end_command_buffer(work.cmd).unwrap();
-        self.send.send(work).unwrap();
+        self.send.send(Message::Execute(work)).unwrap();
     }
 
-    // TODO: `cancel`
+    /// Release a command buffer without executing any recorded commands
+    ///
+    /// # Safety
+    /// - `device` must match that passed to [`ParallelQueue::new`]
+    /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
+    ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
+    ///   [`reset`](Handle::reset)
+    pub unsafe fn reset(&mut self, device: &Device, work: Work) {
+        device
+            .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
+            .unwrap();
+        self.send.send(Message::Reset(work.time)).unwrap();
+    }
 }
 
 unsafe impl Send for Handle {}
+
+enum Message {
+    Execute(Work),
+    Reset(NonZeroU64),
+}
+
+impl Message {
+    fn time(&self) -> NonZeroU64 {
+        match *self {
+            Message::Execute(ref work) => work.time,
+            Message::Reset(time) => time,
+        }
+    }
+}
+
+impl Eq for Message {}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        self.time() == other.time()
+    }
+}
+
+impl Ord for Message {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.time().cmp(&other.time()).reverse()
+    }
+}
+
+impl PartialOrd for Message {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
