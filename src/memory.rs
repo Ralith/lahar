@@ -300,6 +300,16 @@ impl DedicatedBuffer {
     }
 }
 
+impl Default for DedicatedBuffer {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            memory: vk::DeviceMemory::null(),
+            handle: vk::Buffer::null(),
+        }
+    }
+}
+
 impl DeferredCleanup for DedicatedBuffer {
     fn inter_into(self, graveyard: &mut Graveyard) {
         graveyard.inter(self.memory);
@@ -344,6 +354,16 @@ impl DedicatedImage {
     pub unsafe fn destroy(&mut self, device: &Device) {
         device.destroy_image(self.handle, None);
         device.free_memory(self.memory, None);
+    }
+}
+
+impl Default for DedicatedImage {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            memory: vk::DeviceMemory::null(),
+            handle: vk::Image::null(),
+        }
     }
 }
 
