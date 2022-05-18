@@ -44,7 +44,7 @@ impl StagingRing {
     }
 
     pub unsafe fn push<T: ?Sized>(&mut self, device: &Device, value: &T) -> Alloc {
-        let alloc = self.alloc(device, mem::size_of_val(value));
+        let alloc = self.alloc(device, mem::size_of_val(value), 1);
         self.buffer
             .ptr
             .as_ptr()
@@ -54,17 +54,14 @@ impl StagingRing {
         alloc
     }
 
-    pub unsafe fn alloc(&mut self, device: &Device, mut n: usize) -> Alloc {
-        let rem = n % self.align;
-        if rem != 0 {
-            n += self.align - rem;
-        }
-        let offset = match self.state.alloc(self.buffer.size, n) {
+    pub unsafe fn alloc(&mut self, device: &Device, n: usize, align: usize) -> Alloc {
+        let align = self.align.max(align);
+        let offset = match self.state.alloc(self.buffer.size, n, align) {
             Some(x) => x,
             None => {
                 self.grow(device, n);
                 self.state
-                    .alloc(self.buffer.size, n)
+                    .alloc(self.buffer.size, n, align)
                     .expect("insufficient space after growing")
             }
         };
@@ -208,9 +205,9 @@ pub struct Alloc {
 }
 
 struct RingState {
-    /// Next empty slot
+    /// Offset of the most recently allocated slot
     head: usize,
-    /// Oldest occupied slot
+    /// Offset of the most recently freed storage
     tail: usize,
 }
 
@@ -219,37 +216,33 @@ impl RingState {
         Self { head: 0, tail: 0 }
     }
 
-    fn alloc(&mut self, slots: usize, n: usize) -> Option<usize> {
-        if self.head < self.tail {
-            // head..tail is free
-            if self.tail - self.head > n {
-                let offset = self.head;
-                self.head += n;
-                Some(offset)
-            } else {
-                None
+    fn alloc(&mut self, capacity: usize, size: usize, align: usize) -> Option<usize> {
+        // self.head moves downwards
+        if self.head > self.tail {
+            // Try allocating between head and tail
+            let unaligned = self.head - size;
+            let aligned = unaligned - unaligned % align;
+            if aligned <= self.tail {
+                return None;
             }
-        } else if let Some(max) = self.tail.checked_sub(1) {
-            // head..slots and 0..tail is free
-            if slots - self.head >= n {
-                let offset = self.head;
-                self.head = (self.head + n) % slots;
-                Some(offset)
-            } else if max >= n {
-                self.head = n;
-                Some(0)
-            } else {
-                None
-            }
+            self.head = aligned;
+            Some(self.head)
         } else {
-            // head..slots-1 is free
-            if slots - self.head > n {
-                let offset = self.head;
-                self.head += n;
-                Some(offset)
-            } else {
-                None
+            // Try allocating between head and 0
+            if self.head >= size {
+                // Aligning is guaranteed to be feasible, since 0 is always aligned
+                self.head -= size;
+                self.head -= self.head % align;
+                return Some(self.head);
             }
+            // Try allocating between the end of the buffer and tail
+            let unaligned = capacity - size;
+            let aligned = unaligned - unaligned % align;
+            if aligned <= self.tail {
+                return None;
+            }
+            self.head = aligned;
+            Some(self.head)
         }
     }
 }
@@ -261,16 +254,18 @@ mod tests {
     #[test]
     fn smoke() {
         let mut r = RingState::new();
-        assert_eq!(r.alloc(10, 2), Some(0));
-        assert_eq!(r.alloc(10, 1), Some(2));
-        assert_eq!(r.alloc(10, 7), None);
-        assert_eq!(r.alloc(10, 6), Some(3));
-        r.tail = 1;
-        assert_eq!(r.alloc(10, 1), Some(9));
-        assert_eq!(r.alloc(10, 1), None);
-        r.tail = 2;
-        assert_eq!(r.alloc(10, 2), None);
-        assert_eq!(r.alloc(10, 1), Some(0));
-        assert_eq!(r.alloc(10, 1), None);
+        assert_eq!(r.alloc(10, 2, 1), Some(8));
+        assert_eq!(r.alloc(10, 1, 1), Some(7));
+        assert_eq!(r.alloc(10, 7, 1), None);
+        assert_eq!(r.alloc(10, 6, 1), Some(1));
+        r.tail = 8;
+        assert_eq!(r.alloc(10, 1, 2), Some(0));
+        assert_eq!(r.alloc(10, 1, 1), Some(9));
+        assert_eq!(r.alloc(10, 1, 1), None);
+        r.tail = 7;
+        assert_eq!(r.alloc(10, 2, 1), None);
+        assert_eq!(r.alloc(10, 1, 16), None);
+        assert_eq!(r.alloc(10, 1, 1), Some(8));
+        assert_eq!(r.alloc(10, 1, 1), None);
     }
 }
