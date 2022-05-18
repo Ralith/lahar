@@ -6,6 +6,7 @@ pub mod staging_ring;
 
 mod memory;
 mod region;
+mod ring_state;
 mod timeline_ring;
 
 pub use graveyard::Graveyard;
@@ -17,3 +18,5 @@ pub use parallel_queue::ParallelQueue;
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging_ring::StagingRing;
 pub use timeline_ring::TimelineRing;
+
+use ring_state::RingState;
