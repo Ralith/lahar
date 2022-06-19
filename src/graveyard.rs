@@ -30,7 +30,7 @@ impl Graveyard {
         self.cursor = (self.cursor + 1) % self.frames.len();
         let frame = &mut self.frames[self.cursor];
         for (ty, handle) in frame.handles.drain(..) {
-            destroy(device, ty, handle);
+            destroy_dynamic(device, ty, handle);
         }
     }
 
@@ -77,7 +77,7 @@ impl Frame {
     }
 }
 
-unsafe fn destroy(device: &Device, ty: vk::ObjectType, handle: u64) {
+pub unsafe fn destroy_dynamic(device: &Device, ty: vk::ObjectType, handle: u64) {
     match ty {
         vk::ObjectType::BUFFER => device.destroy_buffer(vk::Buffer::from_raw(handle), None),
         vk::ObjectType::IMAGE => device.destroy_image(vk::Image::from_raw(handle), None),
