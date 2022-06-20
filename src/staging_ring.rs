@@ -26,7 +26,7 @@ impl StagingRing {
         let (buffer, memory_type) =
             BackingMem::new_from_props(device, props, capacity as vk::DeviceSize);
         Self {
-            state: RingState::new(),
+            state: RingState::new(capacity),
             memory_type,
             align: limits.optimal_buffer_copy_offset_alignment as usize,
             buffer,
@@ -56,12 +56,12 @@ impl StagingRing {
 
     pub unsafe fn alloc(&mut self, device: &Device, n: usize, align: usize) -> Alloc {
         let align = self.align.max(align);
-        let offset = match self.state.alloc(self.buffer.size, n, align) {
+        let offset = match self.state.alloc(n, align) {
             Some(x) => x,
             None => {
                 self.grow(device, n);
                 self.state
-                    .alloc(self.buffer.size, n, align)
+                    .alloc(n, align)
                     .expect("insufficient space after growing")
             }
         };
@@ -72,13 +72,13 @@ impl StagingRing {
     }
 
     unsafe fn grow(&mut self, device: &Device, min_increment: usize) {
-        let new_size = min_increment.max(self.buffer.size * 2);
+        let new_size = min_increment.max(self.state.capacity * 2);
         let old = mem::replace(
             &mut self.buffer,
             BackingMem::new_from_ty(device, self.memory_type, new_size as vk::DeviceSize),
         );
         self.old.push(old);
-        self.state = RingState::new();
+        self.state = RingState::new(new_size);
     }
 
     /// Get the storage for an allocation
@@ -116,7 +116,6 @@ struct BackingMem {
     memory: vk::DeviceMemory,
     buffer: vk::Buffer,
     ptr: NonNull<u8>,
-    size: usize,
 }
 
 impl BackingMem {
@@ -193,7 +192,6 @@ impl BackingMem {
             memory,
             buffer,
             ptr,
-            size: size as usize,
         }
     }
 }
@@ -210,19 +208,19 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let mut r = RingState::new();
-        assert_eq!(r.alloc(10, 2, 1), Some(8));
-        assert_eq!(r.alloc(10, 1, 1), Some(7));
-        assert_eq!(r.alloc(10, 7, 1), None);
-        assert_eq!(r.alloc(10, 6, 1), Some(1));
+        let mut r = RingState::new(10);
+        assert_eq!(r.alloc(2, 1), Some(8));
+        assert_eq!(r.alloc(1, 1), Some(7));
+        assert_eq!(r.alloc(7, 1), None);
+        assert_eq!(r.alloc(6, 1), Some(1));
         r.tail = 8;
-        assert_eq!(r.alloc(10, 1, 2), Some(0));
-        assert_eq!(r.alloc(10, 1, 1), Some(9));
-        assert_eq!(r.alloc(10, 1, 1), None);
+        assert_eq!(r.alloc(1, 2), Some(0));
+        assert_eq!(r.alloc(1, 1), Some(9));
+        assert_eq!(r.alloc(1, 1), None);
         r.tail = 7;
-        assert_eq!(r.alloc(10, 2, 1), None);
-        assert_eq!(r.alloc(10, 1, 16), None);
-        assert_eq!(r.alloc(10, 1, 1), Some(8));
-        assert_eq!(r.alloc(10, 1, 1), None);
+        assert_eq!(r.alloc(2, 1), None);
+        assert_eq!(r.alloc(1, 16), None);
+        assert_eq!(r.alloc(1, 1), Some(8));
+        assert_eq!(r.alloc(1, 1), None);
     }
 }

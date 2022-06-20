@@ -3,14 +3,20 @@ pub struct RingState {
     pub head: usize,
     /// Offset of the most recently freed storage
     pub tail: usize,
+    /// Maximum cursor value plus one
+    pub capacity: usize,
 }
 
 impl RingState {
-    pub fn new() -> Self {
-        Self { head: 0, tail: 0 }
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            head: 0,
+            tail: 0,
+            capacity,
+        }
     }
 
-    pub fn alloc(&mut self, capacity: usize, size: usize, align: usize) -> Option<usize> {
+    pub fn alloc(&mut self, size: usize, align: usize) -> Option<usize> {
         // self.head moves downwards
         if self.head > self.tail {
             // Try allocating between head and tail
@@ -30,7 +36,7 @@ impl RingState {
                 return Some(self.head);
             }
             // Try allocating between the end of the buffer and tail
-            let unaligned = capacity.checked_sub(size)?;
+            let unaligned = self.capacity.checked_sub(size)?;
             let aligned = unaligned - unaligned % align;
             if aligned <= self.tail {
                 return None;
@@ -47,13 +53,17 @@ mod tests {
 
     #[test]
     fn larger_than_capacity_while_empty() {
-        let mut r = RingState::new();
-        assert_eq!(r.alloc(128, 256, 1), None);
+        let mut r = RingState::new(128);
+        assert_eq!(r.alloc(256, 1), None);
     }
 
     #[test]
     fn larger_than_capacity_wrapped() {
-        let mut r = RingState { tail: 16, head: 32 };
-        assert_eq!(r.alloc(128, 256, 1), None);
+        let mut r = RingState {
+            tail: 16,
+            head: 32,
+            capacity: 128,
+        };
+        assert_eq!(r.alloc(256, 1), None);
     }
 }
