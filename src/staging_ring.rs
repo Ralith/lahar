@@ -201,26 +201,3 @@ pub struct Alloc {
     pub buffer: vk::Buffer,
     pub offset: vk::DeviceSize,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn smoke() {
-        let mut r = RingState::new(10);
-        assert_eq!(r.alloc(2, 1), Some(8));
-        assert_eq!(r.alloc(1, 1), Some(7));
-        assert_eq!(r.alloc(7, 1), None);
-        assert_eq!(r.alloc(6, 1), Some(1));
-        r.tail = 8;
-        assert_eq!(r.alloc(1, 2), Some(0));
-        assert_eq!(r.alloc(1, 1), Some(9));
-        assert_eq!(r.alloc(1, 1), None);
-        r.tail = 7;
-        assert_eq!(r.alloc(2, 1), None);
-        assert_eq!(r.alloc(1, 16), None);
-        assert_eq!(r.alloc(1, 1), Some(8));
-        assert_eq!(r.alloc(1, 1), None);
-    }
-}
