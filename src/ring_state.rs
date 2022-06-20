@@ -14,7 +14,7 @@ impl RingState {
         // self.head moves downwards
         if self.head > self.tail {
             // Try allocating between head and tail
-            let unaligned = self.head - size;
+            let unaligned = self.head.checked_sub(size)?;
             let aligned = unaligned - unaligned % align;
             if aligned <= self.tail {
                 return None;
@@ -30,7 +30,7 @@ impl RingState {
                 return Some(self.head);
             }
             // Try allocating between the end of the buffer and tail
-            let unaligned = capacity - size;
+            let unaligned = capacity.checked_sub(size)?;
             let aligned = unaligned - unaligned % align;
             if aligned <= self.tail {
                 return None;
@@ -38,5 +38,22 @@ impl RingState {
             self.head = aligned;
             Some(self.head)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn larger_than_capacity_while_empty() {
+        let mut r = RingState::new();
+        assert_eq!(r.alloc(128, 256, 1), None);
+    }
+
+    #[test]
+    fn larger_than_capacity_wrapped() {
+        let mut r = RingState { tail: 16, head: 32 };
+        assert_eq!(r.alloc(128, 256, 1), None);
     }
 }
