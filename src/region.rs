@@ -17,7 +17,7 @@ impl BufferRegion {
     ) -> Self {
         let buffer = device
             .create_buffer(
-                &vk::BufferCreateInfo::builder()
+                &vk::BufferCreateInfo::default()
                     .size(1)
                     .usage(usage)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -71,7 +71,7 @@ impl BufferRegion {
         unsafe {
             let handle = device
                 .create_buffer(
-                    &vk::BufferCreateInfo::builder()
+                    &vk::BufferCreateInfo::default()
                         .size(size)
                         .usage(self.usage)
                         .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -81,10 +81,10 @@ impl BufferRegion {
             let reqs = device.get_buffer_memory_requirements(handle);
             let memory = device
                 .allocate_memory(
-                    &vk::MemoryAllocateInfo::builder()
+                    &vk::MemoryAllocateInfo::default()
                         .allocation_size(reqs.size)
                         .memory_type_index(self.inner.memory_type_index)
-                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().buffer(handle)),
+                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().buffer(handle)),
                     None,
                 )
                 .unwrap();
@@ -120,7 +120,7 @@ impl ImageRegion {
     ) -> Self {
         let image = device
             .create_image(
-                &vk::ImageCreateInfo::builder()
+                &vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_1D)
                     .format(vk::Format::R8_UNORM)
                     .extent(vk::Extent3D {
@@ -189,7 +189,7 @@ impl ImageRegion {
         let size = self.inner.next_chunk_size(minimum_size);
         let memory = device
             .allocate_memory(
-                &vk::MemoryAllocateInfo::builder()
+                &vk::MemoryAllocateInfo::default()
                     .allocation_size(size)
                     .memory_type_index(self.inner.memory_type_index),
                 None,

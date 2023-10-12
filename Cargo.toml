@@ -9,4 +9,4 @@ repository = "https://github.com/Ralith/lahar"
 readme = "README.md"
 
 [dependencies]
-ash = { version = "0.37", default-features = false }
+ash = { version = "0.38", default-features = false }
