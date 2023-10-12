@@ -9,4 +9,4 @@ repository = "https://github.com/Ralith/lahar"
 readme = "README.md"
 
 [dependencies]
-ash = { version = "0.37", default-features = false }
+ash = { git = "https://github.com/ash-rs/ash", rev = "11647de8599e17142f87652ae2fd389ef74c894c", default-features = false }

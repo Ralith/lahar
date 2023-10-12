@@ -32,8 +32,8 @@ impl ParallelQueue {
         let (send, recv) = mpsc::channel();
         let semaphore = device
             .create_semaphore(
-                &vk::SemaphoreCreateInfo::builder().push_next(
-                    &mut vk::SemaphoreTypeCreateInfo::builder()
+                &vk::SemaphoreCreateInfo::default().push_next(
+                    &mut vk::SemaphoreTypeCreateInfo::default()
                         .semaphore_type(vk::SemaphoreType::TIMELINE),
                 ),
                 None,
@@ -96,14 +96,13 @@ impl ParallelQueue {
         device
             .queue_submit(
                 self.queue,
-                &[vk::SubmitInfo::builder()
+                &[vk::SubmitInfo::default()
                     .command_buffers(&cmds)
                     .signal_semaphores(&[self.shared.semaphore])
                     .push_next(
-                        &mut vk::TimelineSemaphoreSubmitInfo::builder()
+                        &mut vk::TimelineSemaphoreSubmitInfo::default()
                             .signal_semaphore_values(&[self.first_unsubmitted - 1]),
-                    )
-                    .build()],
+                    )],
                 vk::Fence::null(),
             )
             .unwrap();
@@ -122,7 +121,7 @@ impl ParallelQueue {
     pub unsafe fn park(&mut self, device: &Device, wake: vk::Semaphore, wake_value: u64) -> u64 {
         device
             .wait_semaphores(
-                &vk::SemaphoreWaitInfo::builder()
+                &vk::SemaphoreWaitInfo::default()
                     .semaphores(&[self.shared.semaphore, wake])
                     .values(&[self.first_unsignaled, wake_value]),
                 !0,
@@ -146,7 +145,7 @@ impl ParallelQueue {
     pub unsafe fn drain(&mut self, device: &Device) {
         device
             .wait_semaphores(
-                &vk::SemaphoreWaitInfo::builder()
+                &vk::SemaphoreWaitInfo::default()
                     .semaphores(&[self.shared.semaphore])
                     .values(&[self.first_unsubmitted - 1]),
                 !0,
@@ -186,7 +185,7 @@ impl HandleSeed {
     pub unsafe fn into_handle(self, device: &Device) -> Handle {
         let cmd_pool = device
             .create_command_pool(
-                &vk::CommandPoolCreateInfo::builder()
+                &vk::CommandPoolCreateInfo::default()
                     .queue_family_index(self.0.queue_family_index)
                     .flags(
                         vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
@@ -197,7 +196,7 @@ impl HandleSeed {
             .unwrap();
         let spare_cmds = device
             .allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::builder()
+                &vk::CommandBufferAllocateInfo::default()
                     .command_pool(cmd_pool)
                     .command_buffer_count(32),
             )
@@ -272,7 +271,7 @@ impl Handle {
                     self.spare_cmds.extend(
                         device
                             .allocate_command_buffers(
-                                &vk::CommandBufferAllocateInfo::builder()
+                                &vk::CommandBufferAllocateInfo::default()
                                     .command_pool(self.cmd_pool)
                                     .command_buffer_count(32),
                             )
@@ -285,7 +284,7 @@ impl Handle {
         device
             .begin_command_buffer(
                 cmd,
-                &vk::CommandBufferBeginInfo::builder()
+                &vk::CommandBufferBeginInfo::default()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )
             .unwrap();

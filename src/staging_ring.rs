@@ -126,7 +126,7 @@ impl BackingMem {
     ) -> (Self, u32) {
         let buffer = device
             .create_buffer(
-                &vk::BufferCreateInfo::builder()
+                &vk::BufferCreateInfo::default()
                     .size(size)
                     .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -149,7 +149,7 @@ impl BackingMem {
     unsafe fn new_from_ty(device: &Device, memory_ty: u32, size: vk::DeviceSize) -> Self {
         let buffer = device
             .create_buffer(
-                &vk::BufferCreateInfo::builder()
+                &vk::BufferCreateInfo::default()
                     .size(size)
                     .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -169,10 +169,10 @@ impl BackingMem {
     ) -> Self {
         let memory = device
             .allocate_memory(
-                &vk::MemoryAllocateInfo::builder()
+                &vk::MemoryAllocateInfo::default()
                     .allocation_size(reqs.size)
                     .memory_type_index(memory_ty)
-                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().buffer(buffer)),
+                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().buffer(buffer)),
                 None,
             )
             .unwrap();

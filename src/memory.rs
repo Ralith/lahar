@@ -25,7 +25,7 @@ impl<T: Copy> Staged<T> {
         let buffer = DedicatedBuffer::new(
             device,
             props,
-            &vk::BufferCreateInfo::builder()
+            &vk::BufferCreateInfo::default()
                 .size(mem::size_of::<T>() as _)
                 .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -160,7 +160,7 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
         let buffer = DedicatedBuffer::new(
             device,
             props,
-            &vk::BufferCreateInfo::builder()
+            &vk::BufferCreateInfo::default()
                 .size(mem::size_of::<T>() as _)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -198,7 +198,7 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
         let buffer = DedicatedBuffer::new(
             device,
             props,
-            &vk::BufferCreateInfo::builder()
+            &vk::BufferCreateInfo::default()
                 .size((size * mem::size_of::<T>()) as vk::DeviceSize)
                 .usage(usage)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE),
@@ -283,10 +283,10 @@ impl DedicatedBuffer {
             find_memory_type(props, reqs.memory_type_bits, flags).expect("no matching memory type");
         let memory = device
             .allocate_memory(
-                &vk::MemoryAllocateInfo::builder()
+                &vk::MemoryAllocateInfo::default()
                     .allocation_size(reqs.size)
                     .memory_type_index(memory_ty)
-                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().buffer(handle)),
+                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().buffer(handle)),
                 None,
             )
             .unwrap();
@@ -340,10 +340,10 @@ impl DedicatedImage {
         .expect("no matching memory type");
         let memory = device
             .allocate_memory(
-                &vk::MemoryAllocateInfo::builder()
+                &vk::MemoryAllocateInfo::default()
                     .allocation_size(reqs.size)
                     .memory_type_index(memory_ty)
-                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::builder().image(handle)),
+                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().image(handle)),
                 None,
             )
             .unwrap();
@@ -395,7 +395,7 @@ pub unsafe fn alloc_bind(
         .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
     let memory = if resources.len() == 1 {
         device.allocate_memory(
-            &vk::MemoryAllocateInfo::builder()
+            &vk::MemoryAllocateInfo::default()
                 .allocation_size(total.size)
                 .memory_type_index(ty)
                 .push_next(&mut resources[0].memory_dedicated_allocate_info()),
@@ -403,7 +403,7 @@ pub unsafe fn alloc_bind(
         )
     } else {
         device.allocate_memory(
-            &vk::MemoryAllocateInfo::builder()
+            &vk::MemoryAllocateInfo::default()
                 .allocation_size(total.size)
                 .memory_type_index(ty),
             None,
@@ -424,7 +424,7 @@ pub trait MemoryResource: Copy {
         memory: vk::DeviceMemory,
         offset: vk::DeviceSize,
     ) -> Result<()>;
-    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo;
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo<'static>;
 }
 
 impl MemoryResource for vk::Buffer {
@@ -444,7 +444,7 @@ impl MemoryResource for vk::Buffer {
     }
 
     #[inline]
-    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo {
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo<'static> {
         vk::MemoryDedicatedAllocateInfo {
             buffer: self,
             ..Default::default()
@@ -469,7 +469,7 @@ impl MemoryResource for vk::Image {
     }
 
     #[inline]
-    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo {
+    fn memory_dedicated_allocate_info(self) -> vk::MemoryDedicatedAllocateInfo<'static> {
         vk::MemoryDedicatedAllocateInfo {
             image: self,
             ..Default::default()
