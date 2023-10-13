@@ -12,7 +12,7 @@ mod timeline_ring;
 pub use graveyard::{destroy_dynamic, Graveyard};
 pub use memory::{
     align, alloc_bind, find_memory_type, AppendBuffer, DedicatedBuffer, DedicatedImage,
-    DedicatedMapping, MemoryResource, Staged,
+    DedicatedMapping, MemoryResource, ScratchBuffer, Staged,
 };
 pub use parallel_queue::ParallelQueue;
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};

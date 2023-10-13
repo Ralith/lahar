@@ -8,6 +8,7 @@ use ash::prelude::VkResult as Result;
 use ash::{vk, Device};
 
 use crate::graveyard::{DeferredCleanup, Graveyard};
+use crate::StagingRing;
 
 /// Helper for repeatedly copying fixed-size data into the same GPU buffer
 pub struct Staged<T: Copy> {
@@ -625,5 +626,111 @@ impl AppendBuffer {
 
     pub unsafe fn destroy(&mut self, device: &Device) {
         self.buffer.destroy(device);
+    }
+}
+
+/// A variable-size buffer that's regularly rewritten by the CPU
+///
+/// Useful for accumulating per-draw data like transforms, materials, or
+/// indirect commands
+pub struct ScratchBuffer<T> {
+    values: Vec<T>,
+    usage: vk::BufferUsageFlags,
+    buffer: DedicatedBuffer,
+    capacity: usize,
+}
+
+impl<T> ScratchBuffer<T> {
+    pub unsafe fn with_capacity(
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        usage: vk::BufferUsageFlags,
+        capacity: usize,
+    ) -> Self {
+        let buffer = DedicatedBuffer::new(
+            device,
+            props,
+            &vk::BufferCreateInfo::default()
+                .size(capacity as vk::DeviceSize)
+                .usage(usage | vk::BufferUsageFlags::TRANSFER_DST),
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        Self {
+            values: Vec::with_capacity(capacity),
+            usage,
+            buffer,
+            capacity,
+        }
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        self.buffer.destroy(device);
+    }
+
+    /// The buffer that [`ScratchBuffer::transfer`] transfers to
+    ///
+    /// Invalidated by calls to [`ScratchBuffer::transfer`]
+    pub fn buffer(&self) -> &DedicatedBuffer {
+        &self.buffer
+    }
+
+    /// Buffer `value` for inclusion in the next transfer
+    pub fn push(&mut self, value: T) {
+        self.values.push(value)
+    }
+
+    /// Discard all buffered values
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    /// Number of buffered values
+    pub fn len(&self) -> u32 {
+        self.values.len() as u32
+    }
+
+    /// Copies accumulated data into `staging` and records a transfer command to `cmd`
+    ///
+    /// Returns an old buffer to dispose of, if needed.
+    pub unsafe fn transfer(
+        &mut self,
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        staging: &mut StagingRing,
+        cmd: vk::CommandBuffer,
+    ) -> Option<DedicatedBuffer> {
+        if self.len() == 0 {
+            return None;
+        }
+        let mut old_buffer = None;
+        // Ensure sufficient space in destination
+        if self.capacity < mem::size_of_val(&*self.values) {
+            self.capacity = self.values.capacity() * mem::size_of::<T>();
+            let new = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default()
+                    .size(self.capacity as vk::DeviceSize)
+                    .usage(self.usage | vk::BufferUsageFlags::TRANSFER_DST),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            old_buffer = Some(mem::replace(&mut self.buffer, new));
+        }
+
+        // Copy into staging buffer
+        let alloc = staging.push(device, &*self.values);
+
+        // Schedule copy to device
+        device.cmd_copy_buffer(
+            cmd,
+            alloc.buffer,
+            self.buffer().handle,
+            &[vk::BufferCopy {
+                src_offset: alloc.offset,
+                dst_offset: 0,
+                size: mem::size_of_val(&*self.values) as vk::DeviceSize,
+            }],
+        );
+        old_buffer
     }
 }
