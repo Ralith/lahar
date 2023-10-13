@@ -504,3 +504,126 @@ pub fn align(offset: u64, alignment: u64) -> u64 {
     };
     offset + padding
 }
+
+/// A single linearly-allocated buffer to be populated with transfers
+///
+/// Convenient for vertex/index buffers and other rarely-written random-access storage.
+pub struct AppendBuffer {
+    usage: vk::BufferUsageFlags,
+    buffer: DedicatedBuffer,
+    capacity: vk::DeviceSize,
+    fill: vk::DeviceSize,
+}
+
+impl AppendBuffer {
+    /// Create a buffer that can fit `capacity` bytes without growing
+    pub unsafe fn with_capacity(
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        usage: vk::BufferUsageFlags,
+        capacity: vk::DeviceSize,
+    ) -> Self {
+        let buffer = DedicatedBuffer::new(
+            device,
+            props,
+            &vk::BufferCreateInfo::default().size(capacity).usage(
+                usage | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
+            ),
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        Self {
+            usage,
+            buffer,
+            capacity,
+            fill: 0,
+        }
+    }
+
+    /// The current buffer
+    ///
+    /// Calls to [`AppendBuffer::alloc`] invalidate previously fetched buffer handles.
+    #[inline]
+    pub fn buffer(&self) -> &DedicatedBuffer {
+        &self.buffer
+    }
+
+    /// Allocate `size` bytes
+    ///
+    /// Returns the allocated offset within the buffer. Up to `size` bytes may
+    /// be written to [`AppendBuffer::buffer`] at that offset via
+    /// `TRANSFER_WRITE` operations recorded to `cmd`. If the buffer must be
+    /// grown, writes a copy command to `cmd`, and returns the `DedicatedBuffer`
+    /// to destroy after `cmd` and any other accesses finish executing.
+    #[inline]
+    pub unsafe fn alloc(
+        &mut self,
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        cmd: vk::CommandBuffer,
+        size: vk::DeviceSize,
+    ) -> (vk::DeviceSize, Option<DedicatedBuffer>) {
+        let offset = self.fill;
+        let new_fill = self.fill + size;
+        let mut old_buffer = None;
+        if new_fill > self.capacity {
+            old_buffer = self.grow(device, props, cmd, new_fill);
+        }
+        self.fill = new_fill;
+
+        (offset, old_buffer)
+    }
+
+    unsafe fn grow(
+        &mut self,
+        device: &Device,
+        props: &vk::PhysicalDeviceMemoryProperties,
+        cmd: vk::CommandBuffer,
+        new_fill: vk::DeviceSize,
+    ) -> Option<DedicatedBuffer> {
+        // Grow to the greater of twice our current capacity or the exact space required
+        let new_cap = new_fill.max(self.capacity * 2);
+        let new = DedicatedBuffer::new(
+            device,
+            props,
+            &vk::BufferCreateInfo::default().size(new_cap).usage(
+                self.usage
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+            ),
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+        let mut old_buffer = None;
+        if self.fill > 0 {
+            device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().buffer_memory_barriers(&[
+                    vk::BufferMemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                        .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                        .buffer(self.buffer.handle)
+                        .size(self.fill),
+                ]),
+            );
+            device.cmd_copy_buffer(
+                cmd,
+                self.buffer.handle,
+                new.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: self.fill,
+                }],
+            );
+            old_buffer = Some(mem::replace(&mut self.buffer, new));
+        }
+        self.buffer = new;
+        self.capacity = new_cap;
+        old_buffer
+    }
+
+    pub unsafe fn destroy(&mut self, device: &Device) {
+        self.buffer.destroy(device);
+    }
+}
