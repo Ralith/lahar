@@ -9,7 +9,7 @@ mod region;
 mod ring_state;
 mod timeline_ring;
 
-pub use graveyard::{Graveyard, destroy_dynamic};
+pub use graveyard::{destroy_dynamic, Graveyard};
 pub use memory::{
     align, alloc_bind, find_memory_type, DedicatedBuffer, DedicatedImage, DedicatedMapping,
     MemoryResource, Staged,
