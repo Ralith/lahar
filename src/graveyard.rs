@@ -1,5 +1,7 @@
 use ash::{vk, vk::Handle, Device};
 
+use crate::{HandleVisitor, VisitHandles};
+
 /// Helper for deferred destruction of resources used within a frame
 pub struct Graveyard {
     frames: Box<[Frame]>,
@@ -35,8 +37,15 @@ impl Graveyard {
     }
 
     /// Free the resources in `resources` after `self.depth()` frames
-    pub fn inter(&mut self, resource: impl DeferredCleanup) {
-        resource.inter_into(self);
+    pub fn inter(&mut self, resources: impl VisitHandles) {
+        resources.visit_handles(self);
+    }
+
+    /// Free `handle` after `self.depth()` frames
+    ///
+    /// Escape hatch for stuff that doesn't implement `VisitHandles`
+    pub fn inter_handle<T: Handle>(&mut self, handle: T) {
+        self.frames[self.cursor].push(handle)
     }
 
     /// Free all resources immediately
@@ -47,24 +56,11 @@ impl Graveyard {
     }
 }
 
-/// Owners of Vulkan resources
-pub trait DeferredCleanup {
-    fn inter_into(self, graveyard: &mut Graveyard);
+impl HandleVisitor for Graveyard {
+    fn visit<T: Handle>(&mut self, x: T) {
+        self.inter_handle(x)
+    }
 }
-
-macro_rules! impl_handles {
-    ( $($ty:ident,)* ) => {
-        $(
-            impl DeferredCleanup for vk::$ty {
-                fn inter_into(self, graveyard: &mut Graveyard) {
-                    graveyard.frames[graveyard.cursor].push(self);
-                }
-            }
-        )*
-    };
-}
-
-impl_handles!(Buffer, Image, ImageView, DeviceMemory, Framebuffer,);
 
 /// A collection of resources to be freed in the future
 struct Frame {

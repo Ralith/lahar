@@ -7,8 +7,7 @@ use std::ptr::{self, NonNull};
 use ash::prelude::VkResult as Result;
 use ash::{vk, Device};
 
-use crate::graveyard::{DeferredCleanup, Graveyard};
-use crate::StagingRing;
+use crate::{StagingRing, VisitHandles};
 
 /// Helper for repeatedly copying fixed-size data into the same GPU buffer
 pub struct Staged<T: Copy> {
@@ -311,10 +310,10 @@ impl Default for DedicatedBuffer {
     }
 }
 
-impl DeferredCleanup for DedicatedBuffer {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.inter(self.memory);
-        graveyard.inter(self.handle);
+impl VisitHandles for DedicatedBuffer {
+    fn visit_handles<V: crate::HandleVisitor>(&self, visitor: &mut V) {
+        visitor.visit(self.memory);
+        visitor.visit(self.handle);
     }
 }
 
@@ -368,10 +367,10 @@ impl Default for DedicatedImage {
     }
 }
 
-impl DeferredCleanup for DedicatedImage {
-    fn inter_into(self, graveyard: &mut Graveyard) {
-        graveyard.inter(self.memory);
-        graveyard.inter(self.handle);
+impl VisitHandles for DedicatedImage {
+    fn visit_handles<V: crate::HandleVisitor>(&self, visitor: &mut V) {
+        visitor.visit(self.memory);
+        visitor.visit(self.handle);
     }
 }
 
@@ -629,6 +628,12 @@ impl AppendBuffer {
     }
 }
 
+impl VisitHandles for AppendBuffer {
+    fn visit_handles<V: crate::HandleVisitor>(&self, visitor: &mut V) {
+        self.buffer().visit_handles(visitor);
+    }
+}
+
 /// A variable-size buffer that's regularly rewritten by the CPU
 ///
 /// Useful for accumulating per-draw data like transforms, materials, or
@@ -732,5 +737,11 @@ impl<T> ScratchBuffer<T> {
             }],
         );
         old_buffer
+    }
+}
+
+impl<T> VisitHandles for ScratchBuffer<T> {
+    fn visit_handles<V: crate::HandleVisitor>(&self, visitor: &mut V) {
+        self.buffer().visit_handles(visitor);
     }
 }
