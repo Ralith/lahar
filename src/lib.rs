@@ -8,6 +8,7 @@ mod memory;
 mod region;
 mod ring_state;
 mod timeline_ring;
+mod visit_handles;
 
 pub use graveyard::{destroy_dynamic, Graveyard};
 pub use memory::{
@@ -18,5 +19,6 @@ pub use parallel_queue::ParallelQueue;
 pub use region::{BufferRegion, BufferRegionAlloc, ImageRegion};
 pub use staging_ring::StagingRing;
 pub use timeline_ring::TimelineRing;
+pub use visit_handles::{set_names, HandleVisitor, VisitHandles};
 
 use ring_state::RingState;
