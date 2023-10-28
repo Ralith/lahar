@@ -23,10 +23,11 @@ impl StagingRing {
         frames: usize,
         capacity: usize,
     ) -> Self {
+        let size = capacity + 1;
         let (buffer, memory_type) =
-            BackingMem::new_from_props(device, props, capacity as vk::DeviceSize);
+            BackingMem::new_from_props(device, props, size as vk::DeviceSize);
         Self {
-            state: RingState::new(capacity),
+            state: RingState::new(size),
             memory_type,
             align: limits.optimal_buffer_copy_offset_alignment as usize,
             buffer,
@@ -59,7 +60,9 @@ impl StagingRing {
         let offset = match self.state.alloc(n, align) {
             Some(x) => x,
             None => {
-                self.grow(device, n);
+                // Allocate `n` bytes, plus space to align after leaving room for the empty
+                // ringbuffer slot
+                self.grow(device, n + align);
                 self.state
                     .alloc(n, align)
                     .expect("insufficient space after growing")
