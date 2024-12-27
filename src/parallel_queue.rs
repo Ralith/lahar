@@ -1,6 +1,5 @@
 use std::{
     collections::{BinaryHeap, VecDeque},
-    marker::PhantomData,
     num::NonZeroU64,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -24,11 +23,7 @@ pub struct ParallelQueue {
 impl ParallelQueue {
     /// # Safety
     /// `queue_family_index` must be associated with `queue` under `device`
-    pub unsafe fn new(
-        device: &Device,
-        queue_family_index: u32,
-        queue: vk::Queue,
-    ) -> (Self, HandleSeed) {
+    pub unsafe fn new(device: &Device, queue_family_index: u32, queue: vk::Queue) -> Self {
         let (send, recv) = mpsc::channel();
         let semaphore = device
             .create_semaphore(
@@ -45,17 +40,14 @@ impl ParallelQueue {
             semaphore,
             send: Mutex::new(send),
         });
-        (
-            Self {
-                shared: shared.clone(),
-                recv,
-                first_unsubmitted: 1,
-                first_unsignaled: 1,
-                pending: BinaryHeap::new(),
-                queue,
-            },
-            HandleSeed(shared),
-        )
+        Self {
+            shared,
+            recv,
+            first_unsubmitted: 1,
+            first_unsignaled: 1,
+            pending: BinaryHeap::new(),
+            queue,
+        }
     }
 
     /// # Safety
@@ -153,6 +145,12 @@ impl ParallelQueue {
             .unwrap();
         self.first_unsignaled = self.first_unsubmitted;
     }
+
+    /// # Safety
+    /// `device` must match that passed to `new`
+    pub unsafe fn handle(&self, device: &Device) -> Handle {
+        self.shared.handle(device)
+    }
 }
 
 struct Shared {
@@ -164,29 +162,14 @@ struct Shared {
     send: Mutex<mpsc::Sender<Message>>,
 }
 
-#[derive(Copy, Clone)]
-pub struct Work {
-    /// Command buffer to record commands onto
-    pub cmd: vk::CommandBuffer,
-    /// Value the timeline semaphore will reach when `cmd` has been executed
-    pub time: NonZeroU64,
-}
-
-/// Can be shared between threads, cloned, and used to construct `Handle`s
-///
-/// `Handle`s themselves do not implement `Sync`, so `HandleSeed`s can be more convenient to work
-/// with when setting up parallelism.
-#[derive(Clone)]
-pub struct HandleSeed(Arc<Shared>);
-
-impl HandleSeed {
+impl Shared {
     /// # Safety
     /// `device` must match that passed to [`ParallelQueue::new`]
-    pub unsafe fn into_handle(self, device: &Device) -> Handle {
+    unsafe fn handle(self: &Arc<Self>, device: &Device) -> Handle {
         let cmd_pool = device
             .create_command_pool(
                 &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(self.0.queue_family_index)
+                    .queue_family_index(self.queue_family_index)
                     .flags(
                         vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
                             | vk::CommandPoolCreateFlags::TRANSIENT,
@@ -201,16 +184,23 @@ impl HandleSeed {
                     .command_buffer_count(32),
             )
             .unwrap();
-        let send = self.0.send.lock().unwrap().clone();
+        let send = self.send.lock().unwrap().clone();
         Handle {
             send,
-            shared: self.0,
+            shared: self.clone(),
             cmd_pool,
             spare_cmds,
             in_flight: VecDeque::new(),
-            _marker: PhantomData,
         }
     }
+}
+
+#[derive(Copy, Clone)]
+pub struct Work {
+    /// Command buffer to record commands onto
+    pub cmd: vk::CommandBuffer,
+    /// Value the timeline semaphore will reach when `cmd` has been executed
+    pub time: NonZeroU64,
 }
 
 pub struct Handle {
@@ -219,8 +209,6 @@ pub struct Handle {
     cmd_pool: vk::CommandPool,
     spare_cmds: Vec<vk::CommandBuffer>,
     in_flight: VecDeque<Work>,
-    // Ensure !Sync
-    _marker: PhantomData<*mut ()>,
 }
 
 impl Handle {
@@ -319,8 +307,6 @@ impl Handle {
         self.send.send(Message::Reset(work.time)).unwrap();
     }
 }
-
-unsafe impl Send for Handle {}
 
 enum Message {
     Execute(Work),
