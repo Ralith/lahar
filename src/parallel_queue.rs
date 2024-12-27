@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU64,
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc,
     },
 };
 
@@ -38,7 +38,7 @@ impl ParallelQueue {
             queue_family_index,
             first_unallocated: AtomicU64::new(1),
             semaphore,
-            send: Mutex::new(send),
+            send,
         });
         Self {
             shared,
@@ -158,8 +158,8 @@ struct Shared {
     semaphore: vk::Semaphore,
     /// The lowest value that has not yet been associated with any work
     first_unallocated: AtomicU64,
-    /// For cloning by handles. Could be simplified if `Sender` comes to implement `Sync`.
-    send: Mutex<mpsc::Sender<Message>>,
+    /// For cloning by handles.
+    send: mpsc::Sender<Message>,
 }
 
 impl Shared {
@@ -184,9 +184,8 @@ impl Shared {
                     .command_buffer_count(32),
             )
             .unwrap();
-        let send = self.send.lock().unwrap().clone();
         Handle {
-            send,
+            send: self.send.clone(),
             shared: self.clone(),
             cmd_pool,
             spare_cmds,
