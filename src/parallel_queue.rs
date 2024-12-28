@@ -305,6 +305,14 @@ impl Handle {
             .unwrap();
         self.send.send(Message::Reset(work.time)).unwrap();
     }
+
+    /// Create another handle to the same underlying [`ParallelQueue``]
+    ///
+    /// # Safety
+    /// `device` must match that passed to `new`
+    pub unsafe fn handle(&self, device: &Device) -> Handle {
+        self.shared.handle(device)
+    }
 }
 
 enum Message {
