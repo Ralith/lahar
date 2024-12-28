@@ -48,6 +48,13 @@ impl Graveyard {
         self.frames[self.cursor].push(handle)
     }
 
+    /// Free `handle` after `self.depth()` frames
+    ///
+    /// Escape hatch for dynamically typed handles
+    pub fn inter_handle_dynamic(&mut self, ty: vk::ObjectType, handle: u64) {
+        self.frames[self.cursor].handles.push((ty, handle))
+    }
+
     /// Free all resources immediately
     pub unsafe fn clear(&mut self, device: &Device) {
         for _ in 0..self.frames.len() {
@@ -57,8 +64,8 @@ impl Graveyard {
 }
 
 impl HandleVisitor for Graveyard {
-    fn visit<T: Handle>(&mut self, x: T) {
-        self.inter_handle(x)
+    fn visit_dynamic(&mut self, ty: vk::ObjectType, handle: u64) {
+        self.inter_handle_dynamic(ty, handle);
     }
 }
 

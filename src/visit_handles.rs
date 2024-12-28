@@ -3,7 +3,10 @@ use std::ffi::CStr;
 use ash::{ext::debug_utils, vk, vk::Handle};
 
 pub trait HandleVisitor {
-    fn visit<T: Handle>(&mut self, x: T);
+    fn visit<T: Handle>(&mut self, x: T) {
+        self.visit_dynamic(T::TYPE, x.as_raw());
+    }
+    fn visit_dynamic(&mut self, ty: vk::ObjectType, handle: u64);
 }
 
 pub trait VisitHandles {
@@ -35,14 +38,15 @@ impl_handles!(Buffer, Image, ImageView, DeviceMemory, Framebuffer,);
 pub unsafe fn set_names<T: VisitHandles>(pfn: &debug_utils::Device, x: &T, name: &CStr) {
     struct Visitor<'a>(&'a debug_utils::Device, &'a CStr);
     impl HandleVisitor for Visitor<'_> {
-        fn visit<T: Handle>(&mut self, x: T) {
+        fn visit_dynamic(&mut self, ty: vk::ObjectType, handle: u64) {
             unsafe {
                 self.0
-                    .set_debug_utils_object_name(
-                        &vk::DebugUtilsObjectNameInfoEXT::default()
-                            .object_handle(x)
-                            .object_name(self.1),
-                    )
+                    .set_debug_utils_object_name(&vk::DebugUtilsObjectNameInfoEXT {
+                        object_type: ty,
+                        object_handle: handle,
+                        p_object_name: self.1.as_ptr(),
+                        ..Default::default()
+                    })
                     .unwrap();
             }
         }
