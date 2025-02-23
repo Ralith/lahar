@@ -1,4 +1,4 @@
-use ash::{vk, vk::Handle, Device};
+use ash::{Device, vk, vk::Handle};
 
 use crate::{HandleVisitor, VisitHandles};
 
@@ -29,10 +29,12 @@ impl Graveyard {
 
     /// Free resources from `depth` frames ago
     pub unsafe fn begin_frame(&mut self, device: &Device) {
-        self.cursor = (self.cursor + 1) % self.frames.len();
-        let frame = &mut self.frames[self.cursor];
-        for (ty, handle) in frame.handles.drain(..) {
-            destroy_dynamic(device, ty, handle);
+        unsafe {
+            self.cursor = (self.cursor + 1) % self.frames.len();
+            let frame = &mut self.frames[self.cursor];
+            for (ty, handle) in frame.handles.drain(..) {
+                destroy_dynamic(device, ty, handle);
+            }
         }
     }
 
@@ -57,8 +59,10 @@ impl Graveyard {
 
     /// Free all resources immediately
     pub unsafe fn clear(&mut self, device: &Device) {
-        for _ in 0..self.frames.len() {
-            self.begin_frame(device);
+        unsafe {
+            for _ in 0..self.frames.len() {
+                self.begin_frame(device);
+            }
         }
     }
 }
@@ -81,18 +85,20 @@ impl Frame {
 }
 
 pub unsafe fn destroy_dynamic(device: &Device, ty: vk::ObjectType, handle: u64) {
-    match ty {
-        vk::ObjectType::BUFFER => device.destroy_buffer(vk::Buffer::from_raw(handle), None),
-        vk::ObjectType::IMAGE => device.destroy_image(vk::Image::from_raw(handle), None),
-        vk::ObjectType::IMAGE_VIEW => {
-            device.destroy_image_view(vk::ImageView::from_raw(handle), None)
+    unsafe {
+        match ty {
+            vk::ObjectType::BUFFER => device.destroy_buffer(vk::Buffer::from_raw(handle), None),
+            vk::ObjectType::IMAGE => device.destroy_image(vk::Image::from_raw(handle), None),
+            vk::ObjectType::IMAGE_VIEW => {
+                device.destroy_image_view(vk::ImageView::from_raw(handle), None)
+            }
+            vk::ObjectType::DEVICE_MEMORY => {
+                device.free_memory(vk::DeviceMemory::from_raw(handle), None)
+            }
+            vk::ObjectType::FRAMEBUFFER => {
+                device.destroy_framebuffer(vk::Framebuffer::from_raw(handle), None)
+            }
+            _ => unimplemented!("cannot destroy {:?} handles", ty),
         }
-        vk::ObjectType::DEVICE_MEMORY => {
-            device.free_memory(vk::DeviceMemory::from_raw(handle), None)
-        }
-        vk::ObjectType::FRAMEBUFFER => {
-            device.destroy_framebuffer(vk::Framebuffer::from_raw(handle), None)
-        }
-        _ => unimplemented!("cannot destroy {:?} handles", ty),
     }
 }

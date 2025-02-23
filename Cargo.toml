@@ -2,7 +2,7 @@
 name = "lahar"
 version = "0.1.0"
 authors = ["Benjamin Saunders <ben.e.saunders@gmail.com>"]
-edition = "2021"
+edition = "2024"
 description = "Vulkan helpers"
 license = "Apache-2.0 OR Zlib"
 repository = "https://github.com/Ralith/lahar"

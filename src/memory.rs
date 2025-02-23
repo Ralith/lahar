@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
 use ash::prelude::VkResult as Result;
-use ash::{vk, Device};
+use ash::{Device, vk};
 
 use crate::{StagingRing, VisitHandles};
 
@@ -22,34 +22,41 @@ impl<T: Copy> Staged<T> {
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
-        let buffer = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default()
-                .size(mem::size_of::<T>() as _)
-                .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        );
-        let staging = DedicatedMapping::uninit(device, props, vk::BufferUsageFlags::TRANSFER_SRC);
-        Self { buffer, staging }
+        unsafe {
+            let buffer = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default()
+                    .size(mem::size_of::<T>() as _)
+                    .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            let staging =
+                DedicatedMapping::uninit(device, props, vk::BufferUsageFlags::TRANSFER_SRC);
+            Self { buffer, staging }
+        }
     }
 
     pub unsafe fn write(&mut self, x: T) {
-        ptr::write(self.staging.as_mut_ptr(), x);
+        unsafe {
+            ptr::write(self.staging.as_mut_ptr(), x);
+        }
     }
 
     pub unsafe fn record_transfer(&self, device: &Device, cmd: vk::CommandBuffer) {
-        device.cmd_copy_buffer(
-            cmd,
-            self.staging.buffer(),
-            self.buffer.handle,
-            &[vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: mem::size_of::<T>() as _,
-            }],
-        );
+        unsafe {
+            device.cmd_copy_buffer(
+                cmd,
+                self.staging.buffer(),
+                self.buffer.handle,
+                &[vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: mem::size_of::<T>() as _,
+                }],
+            );
+        }
     }
 
     pub fn buffer(&self) -> vk::Buffer {
@@ -57,8 +64,10 @@ impl<T: Copy> Staged<T> {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.buffer.destroy(device);
-        self.staging.destroy(device);
+        unsafe {
+            self.buffer.destroy(device);
+            self.staging.destroy(device);
+        }
     }
 }
 
@@ -81,9 +90,11 @@ impl<T> DedicatedMapping<T> {
         usage: vk::BufferUsageFlags,
         value: T,
     ) -> Self {
-        let mut x = DedicatedMapping::uninit(device, props, usage);
-        ptr::write(x.as_mut_ptr(), value);
-        x.assume_init()
+        unsafe {
+            let mut x = DedicatedMapping::uninit(device, props, usage);
+            ptr::write(x.as_mut_ptr(), value);
+            x.assume_init()
+        }
     }
 
     pub unsafe fn zeroed(
@@ -91,7 +102,7 @@ impl<T> DedicatedMapping<T> {
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
-        Self::new(device, props, usage, mem::zeroed())
+        unsafe { Self::new(device, props, usage, mem::zeroed()) }
     }
 }
 
@@ -106,21 +117,23 @@ impl<T> DedicatedMapping<[T]> {
         I: IntoIterator<Item = T>,
         I::IntoIter: ExactSizeIterator,
     {
-        let values = values.into_iter();
-        let len = values.len();
-        let mut x = DedicatedMapping::uninit_array(device, props, usage, len);
-        let mut i = 0;
-        for value in values {
-            if i >= len {
-                panic!("iterator length grew unexpectedy");
+        unsafe {
+            let values = values.into_iter();
+            let len = values.len();
+            let mut x = DedicatedMapping::uninit_array(device, props, usage, len);
+            let mut i = 0;
+            for value in values {
+                if i >= len {
+                    panic!("iterator length grew unexpectedy");
+                }
+                ptr::write(x[i].as_mut_ptr(), value);
+                i += 1;
             }
-            ptr::write(x[i].as_mut_ptr(), value);
-            i += 1;
+            if i < len {
+                panic!("iterator length shrank unexpectedy");
+            }
+            x.assume_init()
         }
-        if i < len {
-            panic!("iterator length shrank unexpectedy");
-        }
-        x.assume_init()
     }
 
     pub unsafe fn from_slice(
@@ -132,9 +145,11 @@ impl<T> DedicatedMapping<[T]> {
     where
         T: Copy,
     {
-        let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
-        ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
-        x.assume_init()
+        unsafe {
+            let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
+            ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
+            x.assume_init()
+        }
     }
 
     pub unsafe fn zeroed_array(
@@ -143,11 +158,13 @@ impl<T> DedicatedMapping<[T]> {
         usage: vk::BufferUsageFlags,
         size: usize,
     ) -> Self {
-        let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
-        for elt in &mut *x {
-            ptr::write(elt.as_mut_ptr(), mem::zeroed());
+        unsafe {
+            let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
+            for elt in &mut *x {
+                ptr::write(elt.as_mut_ptr(), mem::zeroed());
+            }
+            x.assume_init()
         }
-        x.assume_init()
     }
 }
 
@@ -157,27 +174,29 @@ impl<T> DedicatedMapping<MaybeUninit<T>> {
         props: &vk::PhysicalDeviceMemoryProperties,
         usage: vk::BufferUsageFlags,
     ) -> Self {
-        let buffer = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default()
-                .size(mem::size_of::<T>() as _)
-                .usage(usage)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-        let ptr = NonNull::new_unchecked(
-            device
-                .map_memory(
-                    buffer.memory,
-                    0,
-                    mem::size_of::<T>() as _,
-                    vk::MemoryMapFlags::default(),
-                )
-                .unwrap(),
-        )
-        .cast();
-        Self { buffer, ptr }
+        unsafe {
+            let buffer = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default()
+                    .size(mem::size_of::<T>() as _)
+                    .usage(usage)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            let ptr = NonNull::new_unchecked(
+                device
+                    .map_memory(
+                        buffer.memory,
+                        0,
+                        mem::size_of::<T>() as _,
+                        vk::MemoryMapFlags::default(),
+                    )
+                    .unwrap(),
+            )
+            .cast();
+            Self { buffer, ptr }
+        }
     }
 
     pub unsafe fn assume_init(self) -> DedicatedMapping<T> {
@@ -195,34 +214,38 @@ impl<T> DedicatedMapping<[MaybeUninit<T>]> {
         usage: vk::BufferUsageFlags,
         size: usize,
     ) -> Self {
-        let buffer = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default()
-                .size((size * mem::size_of::<T>()) as vk::DeviceSize)
-                .usage(usage)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE),
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-        let ptr = std::slice::from_raw_parts_mut(
-            device
-                .map_memory(
-                    buffer.memory,
-                    0,
-                    (size * mem::size_of::<T>()) as _,
-                    vk::MemoryMapFlags::default(),
-                )
-                .unwrap() as *mut _,
-            size,
-        )
-        .into();
-        Self { buffer, ptr }
+        unsafe {
+            let buffer = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default()
+                    .size((size * mem::size_of::<T>()) as vk::DeviceSize)
+                    .usage(usage)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            let ptr = std::slice::from_raw_parts_mut(
+                device
+                    .map_memory(
+                        buffer.memory,
+                        0,
+                        (size * mem::size_of::<T>()) as _,
+                        vk::MemoryMapFlags::default(),
+                    )
+                    .unwrap() as *mut _,
+                size,
+            )
+            .into();
+            Self { buffer, ptr }
+        }
     }
 
     pub unsafe fn assume_init(self) -> DedicatedMapping<[T]> {
-        DedicatedMapping {
-            buffer: self.buffer,
-            ptr: NonNull::new_unchecked(self.ptr.as_ptr() as *mut [T]),
+        unsafe {
+            DedicatedMapping {
+                buffer: self.buffer,
+                ptr: NonNull::new_unchecked(self.ptr.as_ptr() as *mut [T]),
+            }
         }
     }
 }
@@ -241,8 +264,10 @@ impl<T: ?Sized> DedicatedMapping<T> {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        ptr::drop_in_place(self.as_ptr() as *mut T);
-        self.buffer.destroy(device);
+        unsafe {
+            ptr::drop_in_place(self.as_ptr() as *mut T);
+            self.buffer.destroy(device);
+        }
     }
 }
 
@@ -277,26 +302,30 @@ impl DedicatedBuffer {
         info: &vk::BufferCreateInfo,
         flags: vk::MemoryPropertyFlags,
     ) -> Self {
-        let handle = device.create_buffer(info, None).unwrap();
-        let reqs = device.get_buffer_memory_requirements(handle);
-        let memory_ty =
-            find_memory_type(props, reqs.memory_type_bits, flags).expect("no matching memory type");
-        let memory = device
-            .allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(reqs.size)
-                    .memory_type_index(memory_ty)
-                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().buffer(handle)),
-                None,
-            )
-            .unwrap();
-        device.bind_buffer_memory(handle, memory, 0).unwrap();
-        Self { handle, memory }
+        unsafe {
+            let handle = device.create_buffer(info, None).unwrap();
+            let reqs = device.get_buffer_memory_requirements(handle);
+            let memory_ty = find_memory_type(props, reqs.memory_type_bits, flags)
+                .expect("no matching memory type");
+            let memory = device
+                .allocate_memory(
+                    &vk::MemoryAllocateInfo::default()
+                        .allocation_size(reqs.size)
+                        .memory_type_index(memory_ty)
+                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().buffer(handle)),
+                    None,
+                )
+                .unwrap();
+            device.bind_buffer_memory(handle, memory, 0).unwrap();
+            Self { handle, memory }
+        }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        device.destroy_buffer(self.handle, None);
-        device.free_memory(self.memory, None);
+        unsafe {
+            device.destroy_buffer(self.handle, None);
+            device.free_memory(self.memory, None);
+        }
     }
 }
 
@@ -330,30 +359,34 @@ impl DedicatedImage {
         props: &vk::PhysicalDeviceMemoryProperties,
         info: &vk::ImageCreateInfo,
     ) -> Self {
-        let handle = device.create_image(info, None).unwrap();
-        let reqs = device.get_image_memory_requirements(handle);
-        let memory_ty = find_memory_type(
-            props,
-            reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .expect("no matching memory type");
-        let memory = device
-            .allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(reqs.size)
-                    .memory_type_index(memory_ty)
-                    .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().image(handle)),
-                None,
+        unsafe {
+            let handle = device.create_image(info, None).unwrap();
+            let reqs = device.get_image_memory_requirements(handle);
+            let memory_ty = find_memory_type(
+                props,
+                reqs.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )
-            .unwrap();
-        device.bind_image_memory(handle, memory, 0).unwrap();
-        Self { handle, memory }
+            .expect("no matching memory type");
+            let memory = device
+                .allocate_memory(
+                    &vk::MemoryAllocateInfo::default()
+                        .allocation_size(reqs.size)
+                        .memory_type_index(memory_ty)
+                        .push_next(&mut vk::MemoryDedicatedAllocateInfo::default().image(handle)),
+                    None,
+                )
+                .unwrap();
+            device.bind_image_memory(handle, memory, 0).unwrap();
+            Self { handle, memory }
+        }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        device.destroy_image(self.handle, None);
-        device.free_memory(self.memory, None);
+        unsafe {
+            device.destroy_image(self.handle, None);
+            device.free_memory(self.memory, None);
+        }
     }
 }
 
@@ -381,38 +414,40 @@ pub unsafe fn alloc_bind(
     flags: vk::MemoryPropertyFlags,
     resources: &[impl MemoryResource],
 ) -> Result<vk::DeviceMemory> {
-    let mut total = vk::MemoryRequirements::default();
-    total.memory_type_bits = !0;
-    let mut offsets = Vec::with_capacity(resources.len());
-    for resource in resources {
-        let reqs = resource.get_memory_requirements(device);
-        let offset = align(total.size, reqs.alignment);
-        total.size = offset + reqs.size;
-        total.memory_type_bits &= reqs.memory_type_bits;
-        offsets.push(offset);
+    unsafe {
+        let mut total = vk::MemoryRequirements::default();
+        total.memory_type_bits = !0;
+        let mut offsets = Vec::with_capacity(resources.len());
+        for resource in resources {
+            let reqs = resource.get_memory_requirements(device);
+            let offset = align(total.size, reqs.alignment);
+            total.size = offset + reqs.size;
+            total.memory_type_bits &= reqs.memory_type_bits;
+            offsets.push(offset);
+        }
+        let ty = find_memory_type(props, total.memory_type_bits, flags)
+            .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
+        let memory = if resources.len() == 1 {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(total.size)
+                    .memory_type_index(ty)
+                    .push_next(&mut resources[0].memory_dedicated_allocate_info()),
+                None,
+            )
+        } else {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(total.size)
+                    .memory_type_index(ty),
+                None,
+            )
+        }?;
+        for (resource, offset) in resources.iter().zip(offsets) {
+            resource.bind_memory(device, memory, offset)?;
+        }
+        Ok(memory)
     }
-    let ty = find_memory_type(props, total.memory_type_bits, flags)
-        .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
-    let memory = if resources.len() == 1 {
-        device.allocate_memory(
-            &vk::MemoryAllocateInfo::default()
-                .allocation_size(total.size)
-                .memory_type_index(ty)
-                .push_next(&mut resources[0].memory_dedicated_allocate_info()),
-            None,
-        )
-    } else {
-        device.allocate_memory(
-            &vk::MemoryAllocateInfo::default()
-                .allocation_size(total.size)
-                .memory_type_index(ty),
-            None,
-        )
-    }?;
-    for (resource, offset) in resources.iter().zip(offsets) {
-        resource.bind_memory(device, memory, offset)?;
-    }
-    Ok(memory)
 }
 
 /// Resources that can be bound to a `vk::DeviceMemory`
@@ -430,7 +465,7 @@ pub trait MemoryResource: Copy {
 impl MemoryResource for vk::Buffer {
     #[inline]
     unsafe fn get_memory_requirements(self, device: &Device) -> vk::MemoryRequirements {
-        device.get_buffer_memory_requirements(self)
+        unsafe { device.get_buffer_memory_requirements(self) }
     }
 
     #[inline]
@@ -440,7 +475,7 @@ impl MemoryResource for vk::Buffer {
         memory: vk::DeviceMemory,
         offset: vk::DeviceSize,
     ) -> Result<()> {
-        device.bind_buffer_memory(self, memory, offset)
+        unsafe { device.bind_buffer_memory(self, memory, offset) }
     }
 
     #[inline]
@@ -455,7 +490,7 @@ impl MemoryResource for vk::Buffer {
 impl MemoryResource for vk::Image {
     #[inline]
     unsafe fn get_memory_requirements(self, device: &Device) -> vk::MemoryRequirements {
-        device.get_image_memory_requirements(self)
+        unsafe { device.get_image_memory_requirements(self) }
     }
 
     #[inline]
@@ -465,7 +500,7 @@ impl MemoryResource for vk::Image {
         memory: vk::DeviceMemory,
         offset: vk::DeviceSize,
     ) -> Result<()> {
-        device.bind_image_memory(self, memory, offset)
+        unsafe { device.bind_image_memory(self, memory, offset) }
     }
 
     #[inline]
@@ -523,19 +558,21 @@ impl AppendBuffer {
         usage: vk::BufferUsageFlags,
         capacity: vk::DeviceSize,
     ) -> Self {
-        let buffer = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default().size(capacity).usage(
-                usage | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
-            ),
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        );
-        Self {
-            usage,
-            buffer,
-            capacity,
-            fill: 0,
+        unsafe {
+            let buffer = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default().size(capacity).usage(
+                    usage | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
+                ),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            Self {
+                usage,
+                buffer,
+                capacity,
+                fill: 0,
+            }
         }
     }
 
@@ -562,15 +599,17 @@ impl AppendBuffer {
         cmd: vk::CommandBuffer,
         size: vk::DeviceSize,
     ) -> (vk::DeviceSize, Option<DedicatedBuffer>) {
-        let offset = self.fill;
-        let new_fill = self.fill + size;
-        let mut old_buffer = None;
-        if new_fill > self.capacity {
-            old_buffer = self.grow(device, props, cmd, new_fill);
-        }
-        self.fill = new_fill;
+        unsafe {
+            let offset = self.fill;
+            let new_fill = self.fill + size;
+            let mut old_buffer = None;
+            if new_fill > self.capacity {
+                old_buffer = self.grow(device, props, cmd, new_fill);
+            }
+            self.fill = new_fill;
 
-        (offset, old_buffer)
+            (offset, old_buffer)
+        }
     }
 
     unsafe fn grow(
@@ -580,51 +619,55 @@ impl AppendBuffer {
         cmd: vk::CommandBuffer,
         new_fill: vk::DeviceSize,
     ) -> Option<DedicatedBuffer> {
-        // Grow to the greater of twice our current capacity or the exact space required
-        let new_cap = new_fill.max(self.capacity * 2);
-        let new = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default().size(new_cap).usage(
-                self.usage
-                    | vk::BufferUsageFlags::TRANSFER_SRC
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-            ),
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        );
-        let mut old_buffer = None;
-        if self.fill > 0 {
-            device.cmd_pipeline_barrier2(
-                cmd,
-                &vk::DependencyInfo::default().buffer_memory_barriers(&[
-                    vk::BufferMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
-                        .buffer(self.buffer.handle)
-                        .size(self.fill),
-                ]),
+        unsafe {
+            // Grow to the greater of twice our current capacity or the exact space required
+            let new_cap = new_fill.max(self.capacity * 2);
+            let new = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default().size(new_cap).usage(
+                    self.usage
+                        | vk::BufferUsageFlags::TRANSFER_SRC
+                        | vk::BufferUsageFlags::TRANSFER_DST,
+                ),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
             );
-            device.cmd_copy_buffer(
-                cmd,
-                self.buffer.handle,
-                new.handle,
-                &[vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: self.fill,
-                }],
-            );
-            old_buffer = Some(mem::replace(&mut self.buffer, new));
+            let mut old_buffer = None;
+            if self.fill > 0 {
+                device.cmd_pipeline_barrier2(
+                    cmd,
+                    &vk::DependencyInfo::default().buffer_memory_barriers(&[
+                        vk::BufferMemoryBarrier2::default()
+                            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+                            .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                            .buffer(self.buffer.handle)
+                            .size(self.fill),
+                    ]),
+                );
+                device.cmd_copy_buffer(
+                    cmd,
+                    self.buffer.handle,
+                    new.handle,
+                    &[vk::BufferCopy {
+                        src_offset: 0,
+                        dst_offset: 0,
+                        size: self.fill,
+                    }],
+                );
+                old_buffer = Some(mem::replace(&mut self.buffer, new));
+            }
+            self.buffer = new;
+            self.capacity = new_cap;
+            old_buffer
         }
-        self.buffer = new;
-        self.capacity = new_cap;
-        old_buffer
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.buffer.destroy(device);
+        unsafe {
+            self.buffer.destroy(device);
+        }
     }
 }
 
@@ -652,24 +695,28 @@ impl<T> ScratchBuffer<T> {
         usage: vk::BufferUsageFlags,
         capacity: usize,
     ) -> Self {
-        let buffer = DedicatedBuffer::new(
-            device,
-            props,
-            &vk::BufferCreateInfo::default()
-                .size(capacity as vk::DeviceSize)
-                .usage(usage | vk::BufferUsageFlags::TRANSFER_DST),
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        );
-        Self {
-            values: Vec::with_capacity(capacity),
-            usage,
-            buffer,
-            capacity,
+        unsafe {
+            let buffer = DedicatedBuffer::new(
+                device,
+                props,
+                &vk::BufferCreateInfo::default()
+                    .size(capacity as vk::DeviceSize)
+                    .usage(usage | vk::BufferUsageFlags::TRANSFER_DST),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            );
+            Self {
+                values: Vec::with_capacity(capacity),
+                usage,
+                buffer,
+                capacity,
+            }
         }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.buffer.destroy(device);
+        unsafe {
+            self.buffer.destroy(device);
+        }
     }
 
     /// The buffer that [`ScratchBuffer::transfer`] transfers to
@@ -704,39 +751,41 @@ impl<T> ScratchBuffer<T> {
         staging: &mut StagingRing,
         cmd: vk::CommandBuffer,
     ) -> Option<DedicatedBuffer> {
-        if self.len() == 0 {
-            return None;
-        }
-        let mut old_buffer = None;
-        // Ensure sufficient space in destination
-        if self.capacity < mem::size_of_val(&*self.values) {
-            self.capacity = self.values.capacity() * mem::size_of::<T>();
-            let new = DedicatedBuffer::new(
-                device,
-                props,
-                &vk::BufferCreateInfo::default()
-                    .size(self.capacity as vk::DeviceSize)
-                    .usage(self.usage | vk::BufferUsageFlags::TRANSFER_DST),
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        unsafe {
+            if self.len() == 0 {
+                return None;
+            }
+            let mut old_buffer = None;
+            // Ensure sufficient space in destination
+            if self.capacity < mem::size_of_val(&*self.values) {
+                self.capacity = self.values.capacity() * mem::size_of::<T>();
+                let new = DedicatedBuffer::new(
+                    device,
+                    props,
+                    &vk::BufferCreateInfo::default()
+                        .size(self.capacity as vk::DeviceSize)
+                        .usage(self.usage | vk::BufferUsageFlags::TRANSFER_DST),
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                );
+                old_buffer = Some(mem::replace(&mut self.buffer, new));
+            }
+
+            // Copy into staging buffer
+            let alloc = staging.push(device, &*self.values);
+
+            // Schedule copy to device
+            device.cmd_copy_buffer(
+                cmd,
+                alloc.buffer,
+                self.buffer().handle,
+                &[vk::BufferCopy {
+                    src_offset: alloc.offset,
+                    dst_offset: 0,
+                    size: mem::size_of_val(&*self.values) as vk::DeviceSize,
+                }],
             );
-            old_buffer = Some(mem::replace(&mut self.buffer, new));
+            old_buffer
         }
-
-        // Copy into staging buffer
-        let alloc = staging.push(device, &*self.values);
-
-        // Schedule copy to device
-        device.cmd_copy_buffer(
-            cmd,
-            alloc.buffer,
-            self.buffer().handle,
-            &[vk::BufferCopy {
-                src_offset: alloc.offset,
-                dst_offset: 0,
-                size: mem::size_of_val(&*self.values) as vk::DeviceSize,
-            }],
-        );
-        old_buffer
     }
 }
 

@@ -2,12 +2,13 @@ use std::{
     collections::{BinaryHeap, VecDeque},
     num::NonZeroU64,
     sync::{
+        Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
 };
 
-use ash::{vk, Device};
+use ash::{Device, vk};
 
 pub struct ParallelQueue {
     shared: Arc<Shared>,
@@ -24,29 +25,31 @@ impl ParallelQueue {
     /// # Safety
     /// `queue_family_index` must be associated with `queue` under `device`
     pub unsafe fn new(device: &Device, queue_family_index: u32, queue: vk::Queue) -> Self {
-        let (send, recv) = mpsc::channel();
-        let semaphore = device
-            .create_semaphore(
-                &vk::SemaphoreCreateInfo::default().push_next(
-                    &mut vk::SemaphoreTypeCreateInfo::default()
-                        .semaphore_type(vk::SemaphoreType::TIMELINE),
-                ),
-                None,
-            )
-            .unwrap();
-        let shared = Arc::new(Shared {
-            queue_family_index,
-            first_unallocated: AtomicU64::new(1),
-            semaphore,
-            send,
-        });
-        Self {
-            shared,
-            recv,
-            first_unsubmitted: 1,
-            first_unsignaled: 1,
-            pending: BinaryHeap::new(),
-            queue,
+        unsafe {
+            let (send, recv) = mpsc::channel();
+            let semaphore = device
+                .create_semaphore(
+                    &vk::SemaphoreCreateInfo::default().push_next(
+                        &mut vk::SemaphoreTypeCreateInfo::default()
+                            .semaphore_type(vk::SemaphoreType::TIMELINE),
+                    ),
+                    None,
+                )
+                .unwrap();
+            let shared = Arc::new(Shared {
+                queue_family_index,
+                first_unallocated: AtomicU64::new(1),
+                semaphore,
+                send,
+            });
+            Self {
+                shared,
+                recv,
+                first_unsubmitted: 1,
+                first_unsignaled: 1,
+                pending: BinaryHeap::new(),
+                queue,
+            }
         }
     }
 
@@ -54,7 +57,9 @@ impl ParallelQueue {
     /// `device` must match that passed to `new` and no work may be in flight, as determined by
     /// calling `drain` after all work has been submitted.
     pub unsafe fn destroy(&mut self, device: &Device) {
-        device.destroy_semaphore(self.shared.semaphore, None);
+        unsafe {
+            device.destroy_semaphore(self.shared.semaphore, None);
+        }
     }
 
     #[inline]
@@ -65,39 +70,41 @@ impl ParallelQueue {
     /// # Safety
     /// `device` must match that passed to `new`
     pub unsafe fn drive(&mut self, device: &Device) {
-        while let Ok(work) = self.recv.try_recv() {
-            self.pending.push(work);
-        }
-        let mut cmds = Vec::new();
-        // Queue up the next contiguous run of work. By mandating that work be submitted in order
-        // without gaps, we make the semaphore counter value a reliable indicator of when a work
-        // item's execution is complete.
-        while self
-            .pending
-            .peek()
-            .map_or(false, |work| work.time().get() == self.first_unsubmitted)
-        {
-            if let Message::Execute(work) = self.pending.pop().unwrap() {
-                cmds.push(work.cmd);
+        unsafe {
+            while let Ok(work) = self.recv.try_recv() {
+                self.pending.push(work);
             }
-            self.first_unsubmitted += 1;
+            let mut cmds = Vec::new();
+            // Queue up the next contiguous run of work. By mandating that work be submitted in order
+            // without gaps, we make the semaphore counter value a reliable indicator of when a work
+            // item's execution is complete.
+            while self
+                .pending
+                .peek()
+                .map_or(false, |work| work.time().get() == self.first_unsubmitted)
+            {
+                if let Message::Execute(work) = self.pending.pop().unwrap() {
+                    cmds.push(work.cmd);
+                }
+                self.first_unsubmitted += 1;
+            }
+            if cmds.is_empty() {
+                return;
+            }
+            device
+                .queue_submit(
+                    self.queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&cmds)
+                        .signal_semaphores(&[self.shared.semaphore])
+                        .push_next(
+                            &mut vk::TimelineSemaphoreSubmitInfo::default()
+                                .signal_semaphore_values(&[self.first_unsubmitted - 1]),
+                        )],
+                    vk::Fence::null(),
+                )
+                .unwrap();
         }
-        if cmds.is_empty() {
-            return;
-        }
-        device
-            .queue_submit(
-                self.queue,
-                &[vk::SubmitInfo::default()
-                    .command_buffers(&cmds)
-                    .signal_semaphores(&[self.shared.semaphore])
-                    .push_next(
-                        &mut vk::TimelineSemaphoreSubmitInfo::default()
-                            .signal_semaphore_values(&[self.first_unsubmitted - 1]),
-                    )],
-                vk::Fence::null(),
-            )
-            .unwrap();
     }
 
     /// Wait until a submission is complete or `wake` reaches `wake_value`, returning the current
@@ -111,19 +118,21 @@ impl ParallelQueue {
     /// `device`
     #[inline]
     pub unsafe fn park(&mut self, device: &Device, wake: vk::Semaphore, wake_value: u64) -> u64 {
-        device
-            .wait_semaphores(
-                &vk::SemaphoreWaitInfo::default()
-                    .semaphores(&[self.shared.semaphore, wake])
-                    .values(&[self.first_unsignaled, wake_value]),
-                !0,
-            )
-            .unwrap();
-        let complete = device
-            .get_semaphore_counter_value(self.shared.semaphore)
-            .unwrap();
-        self.first_unsignaled = complete + 1;
-        complete
+        unsafe {
+            device
+                .wait_semaphores(
+                    &vk::SemaphoreWaitInfo::default()
+                        .semaphores(&[self.shared.semaphore, wake])
+                        .values(&[self.first_unsignaled, wake_value]),
+                    !0,
+                )
+                .unwrap();
+            let complete = device
+                .get_semaphore_counter_value(self.shared.semaphore)
+                .unwrap();
+            self.first_unsignaled = complete + 1;
+            complete
+        }
     }
 
     /// Wait until all work submitted so far is complete
@@ -135,21 +144,23 @@ impl ParallelQueue {
     /// `device` must match that passed to `new`
     #[inline]
     pub unsafe fn drain(&mut self, device: &Device) {
-        device
-            .wait_semaphores(
-                &vk::SemaphoreWaitInfo::default()
-                    .semaphores(&[self.shared.semaphore])
-                    .values(&[self.first_unsubmitted - 1]),
-                !0,
-            )
-            .unwrap();
-        self.first_unsignaled = self.first_unsubmitted;
+        unsafe {
+            device
+                .wait_semaphores(
+                    &vk::SemaphoreWaitInfo::default()
+                        .semaphores(&[self.shared.semaphore])
+                        .values(&[self.first_unsubmitted - 1]),
+                    !0,
+                )
+                .unwrap();
+            self.first_unsignaled = self.first_unsubmitted;
+        }
     }
 
     /// # Safety
     /// `device` must match that passed to `new`
     pub unsafe fn handle(&self, device: &Device) -> Handle {
-        self.shared.handle(device)
+        unsafe { self.shared.handle(device) }
     }
 }
 
@@ -166,30 +177,32 @@ impl Shared {
     /// # Safety
     /// `device` must match that passed to [`ParallelQueue::new`]
     unsafe fn handle(self: &Arc<Self>, device: &Device) -> Handle {
-        let cmd_pool = device
-            .create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(self.queue_family_index)
-                    .flags(
-                        vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
-                            | vk::CommandPoolCreateFlags::TRANSIENT,
-                    ),
-                None,
-            )
-            .unwrap();
-        let spare_cmds = device
-            .allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default()
-                    .command_pool(cmd_pool)
-                    .command_buffer_count(32),
-            )
-            .unwrap();
-        Handle {
-            send: self.send.clone(),
-            shared: self.clone(),
-            cmd_pool,
-            spare_cmds,
-            in_flight: VecDeque::new(),
+        unsafe {
+            let cmd_pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(self.queue_family_index)
+                        .flags(
+                            vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
+                                | vk::CommandPoolCreateFlags::TRANSIENT,
+                        ),
+                    None,
+                )
+                .unwrap();
+            let spare_cmds = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(cmd_pool)
+                        .command_buffer_count(32),
+                )
+                .unwrap();
+            Handle {
+                send: self.send.clone(),
+                shared: self.clone(),
+                cmd_pool,
+                spare_cmds,
+                in_flight: VecDeque::new(),
+            }
         }
     }
 }
@@ -214,7 +227,9 @@ impl Handle {
     /// # Safety
     /// `device` must match that passed to [`ParallelQueue::new`] and no work may be in flight
     pub unsafe fn destroy(&mut self, device: &Device) {
-        device.destroy_command_pool(self.cmd_pool, None);
+        unsafe {
+            device.destroy_command_pool(self.cmd_pool, None);
+        }
     }
 
     #[inline]
@@ -235,49 +250,51 @@ impl Handle {
     /// # Safety
     /// `device` must match that passed to [`ParallelQueue::new`]
     pub unsafe fn begin(&mut self, device: &Device) -> Work {
-        let time = NonZeroU64::new_unchecked(
-            self.shared
-                .first_unallocated
-                .fetch_add(1, Ordering::Relaxed),
-        );
-        let cmd = match self.spare_cmds.pop() {
-            Some(cmd) => cmd,
-            None => {
-                let complete = device
-                    .get_semaphore_counter_value(self.shared.semaphore)
-                    .unwrap();
-                while self
-                    .in_flight
-                    .front()
-                    .map_or(false, |work| work.time.get() <= complete)
-                {
-                    self.spare_cmds
-                        .push(self.in_flight.pop_front().unwrap().cmd);
+        unsafe {
+            let time = NonZeroU64::new_unchecked(
+                self.shared
+                    .first_unallocated
+                    .fetch_add(1, Ordering::Relaxed),
+            );
+            let cmd = match self.spare_cmds.pop() {
+                Some(cmd) => cmd,
+                None => {
+                    let complete = device
+                        .get_semaphore_counter_value(self.shared.semaphore)
+                        .unwrap();
+                    while self
+                        .in_flight
+                        .front()
+                        .map_or(false, |work| work.time.get() <= complete)
+                    {
+                        self.spare_cmds
+                            .push(self.in_flight.pop_front().unwrap().cmd);
+                    }
+                    if self.spare_cmds.is_empty() {
+                        self.spare_cmds.extend(
+                            device
+                                .allocate_command_buffers(
+                                    &vk::CommandBufferAllocateInfo::default()
+                                        .command_pool(self.cmd_pool)
+                                        .command_buffer_count(32),
+                                )
+                                .unwrap(),
+                        );
+                    }
+                    self.spare_cmds.pop().unwrap()
                 }
-                if self.spare_cmds.is_empty() {
-                    self.spare_cmds.extend(
-                        device
-                            .allocate_command_buffers(
-                                &vk::CommandBufferAllocateInfo::default()
-                                    .command_pool(self.cmd_pool)
-                                    .command_buffer_count(32),
-                            )
-                            .unwrap(),
-                    );
-                }
-                self.spare_cmds.pop().unwrap()
-            }
-        };
-        device
-            .begin_command_buffer(
-                cmd,
-                &vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )
-            .unwrap();
-        let work = Work { cmd, time };
-        self.in_flight.push_back(work);
-        work
+            };
+            device
+                .begin_command_buffer(
+                    cmd,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                )
+                .unwrap();
+            let work = Work { cmd, time };
+            self.in_flight.push_back(work);
+            work
+        }
     }
 
     /// Send recorded commands out for execution
@@ -288,8 +305,10 @@ impl Handle {
     ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
     ///   [`reset`](Handle::reset)
     pub unsafe fn end(&mut self, device: &Device, work: Work) {
-        device.end_command_buffer(work.cmd).unwrap();
-        self.send.send(Message::Execute(work)).unwrap();
+        unsafe {
+            device.end_command_buffer(work.cmd).unwrap();
+            self.send.send(Message::Execute(work)).unwrap();
+        }
     }
 
     /// Release a command buffer without executing any recorded commands
@@ -300,10 +319,12 @@ impl Handle {
     ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
     ///   [`reset`](Handle::reset)
     pub unsafe fn reset(&mut self, device: &Device, work: Work) {
-        device
-            .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
-            .unwrap();
-        self.send.send(Message::Reset(work.time)).unwrap();
+        unsafe {
+            device
+                .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
+                .unwrap();
+            self.send.send(Message::Reset(work.time)).unwrap();
+        }
     }
 
     /// Create another handle to the same underlying [`ParallelQueue``]
@@ -311,7 +332,7 @@ impl Handle {
     /// # Safety
     /// `device` must match that passed to `new`
     pub unsafe fn handle(&self, device: &Device) -> Handle {
-        self.shared.handle(device)
+        unsafe { self.shared.handle(device) }
     }
 }
 

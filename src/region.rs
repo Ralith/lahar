@@ -1,4 +1,4 @@
-use ash::{vk, Device};
+use ash::{Device, vk};
 
 use crate::memory::find_memory_type;
 
@@ -15,26 +15,28 @@ impl BufferRegion {
         capacity: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
     ) -> Self {
-        let buffer = device
-            .create_buffer(
-                &vk::BufferCreateInfo::default()
-                    .size(1)
-                    .usage(usage)
-                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
-                None,
+        unsafe {
+            let buffer = device
+                .create_buffer(
+                    &vk::BufferCreateInfo::default()
+                        .size(1)
+                        .usage(usage)
+                        .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                    None,
+                )
+                .unwrap();
+            let reqs = device.get_buffer_memory_requirements(buffer);
+            device.destroy_buffer(buffer, None);
+            let memory_type_index = find_memory_type(
+                props,
+                reqs.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )
-            .unwrap();
-        let reqs = device.get_buffer_memory_requirements(buffer);
-        device.destroy_buffer(buffer, None);
-        let memory_type_index = find_memory_type(
-            props,
-            reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .expect("vulkan guarantees a device local memory type exists");
-        Self {
-            inner: Region::new(memory_type_index, capacity),
-            usage,
+            .expect("vulkan guarantees a device local memory type exists");
+            Self {
+                inner: Region::new(memory_type_index, capacity),
+                usage,
+            }
         }
     }
 
@@ -94,10 +96,12 @@ impl BufferRegion {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        for chunk in &self.inner.chunks {
-            device.destroy_buffer(chunk.handle, None);
+        unsafe {
+            for chunk in &self.inner.chunks {
+                device.destroy_buffer(chunk.handle, None);
+            }
+            self.inner.destroy(device);
         }
-        self.inner.destroy(device);
     }
 }
 
@@ -118,33 +122,35 @@ impl ImageRegion {
         props: &vk::PhysicalDeviceMemoryProperties,
         capacity: vk::DeviceSize,
     ) -> Self {
-        let image = device
-            .create_image(
-                &vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_1D)
-                    .format(vk::Format::R8_UNORM)
-                    .extent(vk::Extent3D {
-                        width: 1,
-                        height: 1,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .usage(vk::ImageUsageFlags::SAMPLED), // Aside from transient-ness, memory requirements are the same for any usage
-                None,
+        unsafe {
+            let image = device
+                .create_image(
+                    &vk::ImageCreateInfo::default()
+                        .image_type(vk::ImageType::TYPE_1D)
+                        .format(vk::Format::R8_UNORM)
+                        .extent(vk::Extent3D {
+                            width: 1,
+                            height: 1,
+                            depth: 1,
+                        })
+                        .mip_levels(1)
+                        .array_layers(1)
+                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .usage(vk::ImageUsageFlags::SAMPLED), // Aside from transient-ness, memory requirements are the same for any usage
+                    None,
+                )
+                .unwrap();
+            let reqs = device.get_image_memory_requirements(image);
+            device.destroy_image(image, None);
+            let memory_type_index = find_memory_type(
+                props,
+                reqs.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )
-            .unwrap();
-        let reqs = device.get_image_memory_requirements(image);
-        device.destroy_image(image, None);
-        let memory_type_index = find_memory_type(
-            props,
-            reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .expect("vulkan guarantees a device local memory type exists");
-        Self {
-            inner: Region::new(memory_type_index, capacity),
+            .expect("vulkan guarantees a device local memory type exists");
+            Self {
+                inner: Region::new(memory_type_index, capacity),
+            }
         }
     }
 
@@ -153,26 +159,30 @@ impl ImageRegion {
     /// The caller is responsible for freeing the `vk::Image`. `info.format` must not be a depth or
     /// stencil format.
     pub unsafe fn alloc(&mut self, device: &Device, info: &vk::ImageCreateInfo) -> vk::Image {
-        debug_assert!(![
-            vk::Format::D16_UNORM,
-            vk::Format::X8_D24_UNORM_PACK32,
-            vk::Format::D32_SFLOAT,
-            vk::Format::S8_UINT,
-            vk::Format::D16_UNORM_S8_UINT,
-            vk::Format::D24_UNORM_S8_UINT,
-            vk::Format::D32_SFLOAT_S8_UINT
-        ]
-        .contains(&info.format));
-        let handle = device.create_image(info, None).unwrap();
-        let reqs = device.get_image_memory_requirements(handle);
-        if !self.inner.has_capacity_for(reqs.size) {
-            self.grow(device, reqs.size);
+        unsafe {
+            debug_assert!(
+                ![
+                    vk::Format::D16_UNORM,
+                    vk::Format::X8_D24_UNORM_PACK32,
+                    vk::Format::D32_SFLOAT,
+                    vk::Format::S8_UINT,
+                    vk::Format::D16_UNORM_S8_UINT,
+                    vk::Format::D24_UNORM_S8_UINT,
+                    vk::Format::D32_SFLOAT_S8_UINT
+                ]
+                .contains(&info.format)
+            );
+            let handle = device.create_image(info, None).unwrap();
+            let reqs = device.get_image_memory_requirements(handle);
+            if !self.inner.has_capacity_for(reqs.size) {
+                self.grow(device, reqs.size);
+            }
+            let offset = self.inner.alloc(reqs.size, reqs.alignment);
+            device
+                .bind_image_memory(handle, self.inner.chunks.last().unwrap().memory, offset)
+                .unwrap();
+            handle
         }
-        let offset = self.inner.alloc(reqs.size, reqs.alignment);
-        device
-            .bind_image_memory(handle, self.inner.chunks.last().unwrap().memory, offset)
-            .unwrap();
-        handle
     }
 
     /// Bytes used in images returned via `alloc`
@@ -186,20 +196,24 @@ impl ImageRegion {
     }
 
     unsafe fn grow(&mut self, device: &Device, minimum_size: vk::DeviceSize) {
-        let size = self.inner.next_chunk_size(minimum_size);
-        let memory = device
-            .allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(size)
-                    .memory_type_index(self.inner.memory_type_index),
-                None,
-            )
-            .unwrap();
-        self.inner.grow(Chunk { handle: (), memory }, size);
+        unsafe {
+            let size = self.inner.next_chunk_size(minimum_size);
+            let memory = device
+                .allocate_memory(
+                    &vk::MemoryAllocateInfo::default()
+                        .allocation_size(size)
+                        .memory_type_index(self.inner.memory_type_index),
+                    None,
+                )
+                .unwrap();
+            self.inner.grow(Chunk { handle: (), memory }, size);
+        }
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.inner.destroy(device);
+        unsafe {
+            self.inner.destroy(device);
+        }
     }
 }
 
@@ -250,8 +264,10 @@ impl<T> Region<T> {
     }
 
     unsafe fn destroy(&mut self, device: &Device) {
-        for chunk in &self.chunks {
-            device.free_memory(chunk.memory, None);
+        unsafe {
+            for chunk in &self.chunks {
+                device.free_memory(chunk.memory, None);
+            }
         }
     }
 }
