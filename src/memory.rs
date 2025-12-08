@@ -1,7 +1,6 @@
 //! Primitive synchronous allocation helpers
 
 use std::mem::{self, MaybeUninit};
-use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 
 use ash::prelude::VkResult as Result;
@@ -40,7 +39,7 @@ impl<T: Copy> Staged<T> {
 
     pub unsafe fn write(&mut self, x: T) {
         unsafe {
-            ptr::write(self.staging.as_mut_ptr(), x);
+            self.staging.as_mut().write(x);
         }
     }
 
@@ -92,7 +91,7 @@ impl<T> DedicatedMapping<T> {
     ) -> Self {
         unsafe {
             let mut x = DedicatedMapping::uninit(device, props, usage);
-            ptr::write(x.as_mut_ptr(), value);
+            x.as_mut().write(value);
             x.assume_init()
         }
     }
@@ -126,7 +125,7 @@ impl<T> DedicatedMapping<[T]> {
                 if i >= len {
                     panic!("iterator length grew unexpectedy");
                 }
-                ptr::write(x[i].as_mut_ptr(), value);
+                x.as_mut()[i].write(value);
                 i += 1;
             }
             if i < len {
@@ -147,7 +146,7 @@ impl<T> DedicatedMapping<[T]> {
     {
         unsafe {
             let mut x = DedicatedMapping::uninit_array(device, props, usage, values.len());
-            ptr::copy_nonoverlapping(values.as_ptr(), x[0].as_mut_ptr(), values.len());
+            ptr::copy_nonoverlapping(values.as_ptr(), x.as_mut_ptr().cast(), values.len());
             x.assume_init()
         }
     }
@@ -160,8 +159,8 @@ impl<T> DedicatedMapping<[T]> {
     ) -> Self {
         unsafe {
             let mut x = DedicatedMapping::uninit_array(device, props, usage, size);
-            for elt in &mut *x {
-                ptr::write(elt.as_mut_ptr(), mem::zeroed());
+            for elt in x.as_mut() {
+                elt.write(mem::zeroed());
             }
             x.assume_init()
         }
@@ -255,6 +254,18 @@ impl<T: ?Sized> DedicatedMapping<T> {
         self.ptr.as_ptr()
     }
 
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr.as_ptr()
+    }
+
+    pub unsafe fn as_ref(&self) -> &T {
+        unsafe { self.ptr.as_ref() }
+    }
+
+    pub unsafe fn as_mut(&mut self) -> &mut T {
+        unsafe { self.ptr.as_mut() }
+    }
+
     pub fn memory(&self) -> vk::DeviceMemory {
         self.buffer.memory
     }
@@ -273,20 +284,6 @@ impl<T: ?Sized> DedicatedMapping<T> {
 
 unsafe impl<T: ?Sized> Send for DedicatedMapping<T> {}
 unsafe impl<T: ?Sized> Sync for DedicatedMapping<T> {}
-
-impl<T: ?Sized> Deref for DedicatedMapping<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        unsafe { self.ptr.as_ref() }
-    }
-}
-
-impl<T: ?Sized> DerefMut for DedicatedMapping<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        unsafe { self.ptr.as_mut() }
-    }
-}
 
 /// A buffer with its own memory allocation
 #[derive(Copy, Clone)]
