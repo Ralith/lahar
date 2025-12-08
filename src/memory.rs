@@ -165,6 +165,13 @@ impl<T> DedicatedMapping<[T]> {
             x.assume_init()
         }
     }
+
+    pub fn len(&self) -> usize {
+        let ptr = self.as_ptr() as *const [()];
+        // SAFETY: There is no aliasing as () is zero-sized
+        let slice: &[()] = unsafe { &*ptr };
+        slice.len()
+    }
 }
 
 impl<T> DedicatedMapping<MaybeUninit<T>> {
