@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use ash::{Device, vk};
+use ash::{Device, ext, vk};
 
 pub struct ParallelQueue {
     shared: Arc<Shared>,
@@ -19,12 +19,19 @@ pub struct ParallelQueue {
     first_unsignaled: u64,
     pending: BinaryHeap<Message>,
     queue: vk::Queue,
+    debug: Option<DebugLabelContext>,
 }
 
 impl ParallelQueue {
     /// # Safety
-    /// `queue_family_index` must be associated with `queue` under `device`
-    pub unsafe fn new(device: &Device, queue_family_index: u32, queue: vk::Queue) -> Self {
+    /// - `queue_family_index` must be associated with `queue` under `device`
+    /// - `debug_utils` must be associated with `device`
+    pub unsafe fn new(
+        device: &Device,
+        queue_family_index: u32,
+        queue: vk::Queue,
+        debug_utils: Option<&ext::debug_utils::Device>,
+    ) -> Self {
         unsafe {
             let (send, recv) = mpsc::channel();
             let semaphore = device
@@ -49,6 +56,7 @@ impl ParallelQueue {
                 first_unsignaled: 1,
                 pending: BinaryHeap::new(),
                 queue,
+                debug: debug_utils.map(|x| DebugLabelContext::new(device, x, queue_family_index)),
             }
         }
     }
@@ -59,6 +67,7 @@ impl ParallelQueue {
     pub unsafe fn destroy(&mut self, device: &Device) {
         unsafe {
             device.destroy_semaphore(self.shared.semaphore, None);
+            self.debug.as_mut().map(|x| x.destroy(device));
         }
     }
 
@@ -84,12 +93,20 @@ impl ParallelQueue {
                 .map_or(false, |work| work.time().get() == self.first_unsubmitted)
             {
                 if let Message::Execute(work) = self.pending.pop().unwrap() {
+                    if let Some(debug) = &self.debug
+                        && cmds.is_empty()
+                    {
+                        cmds.push(debug.begin);
+                    }
                     cmds.push(work.cmd);
                 }
                 self.first_unsubmitted += 1;
             }
             if cmds.is_empty() {
                 return;
+            }
+            if let Some(debug) = &self.debug {
+                cmds.push(debug.end);
             }
             device
                 .queue_submit(
@@ -161,6 +178,61 @@ impl ParallelQueue {
     /// `device` must match that passed to `new`
     pub unsafe fn handle(&self, device: &Device) -> Handle {
         unsafe { self.shared.handle(device) }
+    }
+}
+
+struct DebugLabelContext {
+    pool: vk::CommandPool,
+    begin: vk::CommandBuffer,
+    end: vk::CommandBuffer,
+}
+
+impl DebugLabelContext {
+    unsafe fn new(
+        device: &Device,
+        debug_utils: &ext::debug_utils::Device,
+        queue_family_index: u32,
+    ) -> Self {
+        unsafe {
+            let pool = device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default().queue_family_index(queue_family_index),
+                    None,
+                )
+                .unwrap();
+            let cmds = device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_buffer_count(2)
+                        .command_pool(pool),
+                )
+                .unwrap();
+
+            let begin = cmds[0];
+            device
+                .begin_command_buffer(begin, &vk::CommandBufferBeginInfo::default())
+                .unwrap();
+            debug_utils.cmd_begin_debug_utils_label(
+                begin,
+                &vk::DebugUtilsLabelEXT::default().label_name(c"async work"),
+            );
+            device.end_command_buffer(begin).unwrap();
+
+            let end = cmds[1];
+            device
+                .begin_command_buffer(end, &vk::CommandBufferBeginInfo::default())
+                .unwrap();
+            debug_utils.cmd_end_debug_utils_label(end);
+            device.end_command_buffer(end).unwrap();
+
+            Self { pool, begin, end }
+        }
+    }
+
+    unsafe fn destroy(&mut self, device: &Device) {
+        unsafe {
+            device.destroy_command_pool(self.pool, None);
+        }
     }
 }
 
