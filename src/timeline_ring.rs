@@ -9,8 +9,10 @@ pub struct TimelineRing {
 }
 
 impl TimelineRing {
-    pub fn new(capacity: usize) -> Self {
-        let size = capacity + 1;
+    /// Create a timeline ring managing a region of `size` bytes
+    ///
+    /// The maximum possible allocation is one byte smaller than the size.
+    pub fn new(size: usize) -> Self {
         Self {
             allocations: VecDeque::new(),
             state: RingState::new(size),
@@ -76,7 +78,7 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let mut ring = TimelineRing::new(5);
+        let mut ring = TimelineRing::new(6);
         assert_eq!(ring.free(), 5);
         assert_eq!(ring.alloc(3, 1, 0), Some(3));
         assert_eq!(ring.free(), 2);
