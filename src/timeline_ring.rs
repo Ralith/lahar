@@ -13,6 +13,7 @@ impl TimelineRing {
     ///
     /// The maximum possible allocation is one byte smaller than the size.
     pub fn new(size: usize) -> Self {
+        assert!(size > 0);
         Self {
             allocations: VecDeque::new(),
             state: RingState::new(size),
@@ -94,5 +95,12 @@ mod tests {
         assert_eq!(ring.free(), 0);
         ring.tick(2);
         assert_eq!(ring.free(), 5);
+    }
+
+    #[test]
+    fn degenerate() {
+        let mut ring = TimelineRing::new(1);
+        assert_eq!(ring.capacity(), 0);
+        assert_eq!(ring.alloc(1, 1, 0), None);
     }
 }
