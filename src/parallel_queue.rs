@@ -210,7 +210,11 @@ impl DebugLabelContext {
 
             let begin = cmds[0];
             device
-                .begin_command_buffer(begin, &vk::CommandBufferBeginInfo::default())
+                .begin_command_buffer(
+                    begin,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE),
+                )
                 .unwrap();
             debug_utils.cmd_begin_debug_utils_label(
                 begin,
@@ -220,7 +224,11 @@ impl DebugLabelContext {
 
             let end = cmds[1];
             device
-                .begin_command_buffer(end, &vk::CommandBufferBeginInfo::default())
+                .begin_command_buffer(
+                    end,
+                    &vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::SIMULTANEOUS_USE),
+                )
                 .unwrap();
             debug_utils.cmd_end_debug_utils_label(end);
             device.end_command_buffer(end).unwrap();
