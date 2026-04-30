@@ -277,7 +277,6 @@ impl Shared {
                 )
                 .unwrap();
             Handle {
-                send: self.send.clone(),
                 shared: self.clone(),
                 cmd_pool,
                 spare_cmds,
@@ -296,7 +295,6 @@ pub struct Work {
 }
 
 pub struct Handle {
-    send: mpsc::Sender<Message>,
     shared: Arc<Shared>,
     cmd_pool: vk::CommandPool,
     spare_cmds: Vec<vk::CommandBuffer>,
@@ -387,7 +385,7 @@ impl Handle {
     pub unsafe fn end(&mut self, device: &Device, work: Work) {
         unsafe {
             device.end_command_buffer(work.cmd).unwrap();
-            self.send.send(Message::Execute(work)).unwrap();
+            self.shared.send.send(Message::Execute(work)).unwrap();
         }
     }
 
@@ -403,7 +401,7 @@ impl Handle {
             device
                 .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
                 .unwrap();
-            self.send.send(Message::Reset(work.time)).unwrap();
+            self.shared.send.send(Message::Reset(work.time)).unwrap();
         }
     }
 
