@@ -1,5 +1,7 @@
 use std::{
+    cell::RefCell,
     collections::{BinaryHeap, VecDeque},
+    marker::PhantomData,
     num::NonZeroU64,
     sync::{
         Arc,
@@ -279,26 +281,38 @@ impl Shared {
             Handle {
                 shared: self.clone(),
                 cmd_pool,
-                spare_cmds,
-                in_flight: VecDeque::new(),
+                spare_cmds: RefCell::new(spare_cmds),
+                in_flight: RefCell::default(),
             }
         }
     }
 }
 
+/// Context for recording commands for asynchronous execution
+///
+/// To ensure host synchronization of the command pool underlying `cmd`, commands must not be
+/// recorded to `cmd` outside the lifetime `'a`.
 #[derive(Copy, Clone)]
-pub struct Work {
+pub struct Work<'a> {
     /// Command buffer to record commands onto
     pub cmd: vk::CommandBuffer,
     /// Value the timeline semaphore will reach when `cmd` has been executed
     pub time: NonZeroU64,
+    // `cmd` is morally a pointer into `cmd_pool` in `Handle`
+    _marker: PhantomData<&'a Handle>,
+}
+
+#[derive(Copy, Clone)]
+struct ErasedWork {
+    cmd: vk::CommandBuffer,
+    time: NonZeroU64,
 }
 
 pub struct Handle {
     shared: Arc<Shared>,
     cmd_pool: vk::CommandPool,
-    spare_cmds: Vec<vk::CommandBuffer>,
-    in_flight: VecDeque<Work>,
+    spare_cmds: RefCell<Vec<vk::CommandBuffer>>,
+    in_flight: RefCell<VecDeque<ErasedWork>>,
 }
 
 impl Handle {
@@ -326,30 +340,31 @@ impl Handle {
     /// [`Work`] to avoid stalling the queue.
     ///
     /// # Safety
-    /// `device` must match that passed to [`ParallelQueue::new`]
-    pub unsafe fn begin(&mut self, device: &Device) -> Work {
+    /// - `device` must match that passed to [`ParallelQueue::new`]
+    /// - [`Work::cmd`] must not be used outside the lifetime of the returned [`Work`]
+    pub unsafe fn begin(&self, device: &Device) -> Work<'_> {
+        let mut spare_cmds = self.spare_cmds.borrow_mut();
+        let mut in_flight = self.in_flight.borrow_mut();
         unsafe {
             let time = NonZeroU64::new_unchecked(
                 self.shared
                     .first_unallocated
                     .fetch_add(1, Ordering::Relaxed),
             );
-            let cmd = match self.spare_cmds.pop() {
+            let cmd = match spare_cmds.pop() {
                 Some(cmd) => cmd,
                 None => {
                     let complete = device
                         .get_semaphore_counter_value(self.shared.semaphore)
                         .unwrap();
-                    while self
-                        .in_flight
+                    while in_flight
                         .front()
                         .map_or(false, |work| work.time.get() <= complete)
                     {
-                        self.spare_cmds
-                            .push(self.in_flight.pop_front().unwrap().cmd);
+                        spare_cmds.push(in_flight.pop_front().unwrap().cmd);
                     }
-                    if self.spare_cmds.is_empty() {
-                        self.spare_cmds.extend(
+                    if spare_cmds.is_empty() {
+                        spare_cmds.extend(
                             device
                                 .allocate_command_buffers(
                                     &vk::CommandBufferAllocateInfo::default()
@@ -359,7 +374,7 @@ impl Handle {
                                 .unwrap(),
                         );
                     }
-                    self.spare_cmds.pop().unwrap()
+                    spare_cmds.pop().unwrap()
                 }
             };
             device
@@ -369,9 +384,13 @@ impl Handle {
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .unwrap();
-            let work = Work { cmd, time };
-            self.in_flight.push_back(work);
-            work
+            let work = ErasedWork { cmd, time };
+            in_flight.push_back(work);
+            Work {
+                cmd: work.cmd,
+                time: work.time,
+                _marker: PhantomData,
+            }
         }
     }
 
@@ -382,10 +401,16 @@ impl Handle {
     /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
     ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
     ///   [`reset`](Handle::reset)
-    pub unsafe fn end(&mut self, device: &Device, work: Work) {
+    pub unsafe fn end(&self, device: &Device, work: Work) {
         unsafe {
             device.end_command_buffer(work.cmd).unwrap();
-            self.shared.send.send(Message::Execute(work)).unwrap();
+            self.shared
+                .send
+                .send(Message::Execute(ErasedWork {
+                    cmd: work.cmd,
+                    time: work.time,
+                }))
+                .unwrap();
         }
     }
 
@@ -396,7 +421,7 @@ impl Handle {
     /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
     ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
     ///   [`reset`](Handle::reset)
-    pub unsafe fn reset(&mut self, device: &Device, work: Work) {
+    pub unsafe fn reset(&self, device: &Device, work: Work) {
         unsafe {
             device
                 .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
@@ -415,7 +440,7 @@ impl Handle {
 }
 
 enum Message {
-    Execute(Work),
+    Execute(ErasedWork),
     Reset(NonZeroU64),
 }
 
