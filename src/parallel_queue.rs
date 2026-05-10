@@ -380,8 +380,7 @@ impl Handle {
 
     /// Obtain a command buffer that commands may be recorded into
     ///
-    /// [`end`](Handle::end) or [`reset`](Handle::reset) must be called soon with the returned
-    /// [`Work`] to avoid stalling the queue.
+    /// The [`Work`] must be dropped or [`end`](Work::end)ed soon to avoid stalling the queue.
     ///
     /// # Safety
     /// - `device` must match that passed to [`ParallelQueue::new`]
