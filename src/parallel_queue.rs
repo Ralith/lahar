@@ -1,7 +1,6 @@
 use std::{
     cell::RefCell,
     collections::{BinaryHeap, VecDeque},
-    marker::PhantomData,
     num::NonZeroU64,
     sync::{
         Arc,
@@ -292,14 +291,63 @@ impl Shared {
 ///
 /// To ensure host synchronization of the command pool underlying `cmd`, commands must not be
 /// recorded to `cmd` outside the lifetime `'a`.
-#[derive(Copy, Clone)]
 pub struct Work<'a> {
+    inner: ErasedWork,
+    // `cmd` is morally a pointer into `cmd_pool` in `Handle`, so this is needed for soundness as
+    // well as convenience.
+    handle: Option<&'a Handle>,
+    device: &'a Device,
+}
+
+impl Work<'_> {
     /// Command buffer to record commands onto
-    pub cmd: vk::CommandBuffer,
+    pub fn cmd(&self) -> vk::CommandBuffer {
+        self.inner.cmd
+    }
+
     /// Value the timeline semaphore will reach when `cmd` has been executed
-    pub time: NonZeroU64,
-    // `cmd` is morally a pointer into `cmd_pool` in `Handle`
-    _marker: PhantomData<&'a Handle>,
+    pub fn time(&self) -> NonZeroU64 {
+        self.inner.time
+    }
+
+    /// Send recorded commands out for execution
+    pub fn end(mut self) {
+        // Safety:
+        // - `device` is the same one passed to `begin`
+        // - Our lifetime guarantees synchronized access to the command pool behind `cmd`
+        unsafe {
+            self.device.end_command_buffer(self.inner.cmd).unwrap();
+            self.handle
+                .take()
+                .unwrap()
+                .shared
+                .send
+                .send(Message::Execute(self.inner))
+                .unwrap();
+        }
+    }
+}
+
+impl Drop for Work<'_> {
+    fn drop(&mut self) {
+        // Reset this command buffer if and only if `end` wasn't called.
+        let Some(handle) = self.handle else {
+            return;
+        };
+        // Safety:
+        // - `device` is the same one passed to `begin`
+        // - Our lifetime guarantees synchronized access to the command pool behind `cmd`
+        unsafe {
+            self.device
+                .reset_command_buffer(self.inner.cmd, vk::CommandBufferResetFlags::empty())
+                .unwrap();
+            handle
+                .shared
+                .send
+                .send(Message::Reset(self.inner.time))
+                .unwrap();
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -342,7 +390,7 @@ impl Handle {
     /// # Safety
     /// - `device` must match that passed to [`ParallelQueue::new`]
     /// - [`Work::cmd`] must not be used outside the lifetime of the returned [`Work`]
-    pub unsafe fn begin(&self, device: &Device) -> Work<'_> {
+    pub unsafe fn begin<'a>(&'a self, device: &'a Device) -> Work<'a> {
         let mut spare_cmds = self.spare_cmds.borrow_mut();
         let mut in_flight = self.in_flight.borrow_mut();
         unsafe {
@@ -387,46 +435,10 @@ impl Handle {
             let work = ErasedWork { cmd, time };
             in_flight.push_back(work);
             Work {
-                cmd: work.cmd,
-                time: work.time,
-                _marker: PhantomData,
+                inner: work,
+                handle: Some(self),
+                device,
             }
-        }
-    }
-
-    /// Send recorded commands out for execution
-    ///
-    /// # Safety
-    /// - `device` must match that passed to [`ParallelQueue::new`]
-    /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
-    ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
-    ///   [`reset`](Handle::reset)
-    pub unsafe fn end(&self, device: &Device, work: Work) {
-        unsafe {
-            device.end_command_buffer(work.cmd).unwrap();
-            self.shared
-                .send
-                .send(Message::Execute(ErasedWork {
-                    cmd: work.cmd,
-                    time: work.time,
-                }))
-                .unwrap();
-        }
-    }
-
-    /// Release a command buffer without executing any recorded commands
-    ///
-    /// # Safety
-    /// - `device` must match that passed to [`ParallelQueue::new`]
-    /// - `work` must have been obtained from a prior call to [`begin`](Handle::begin) on the same
-    ///   `Handle`, and have not been previously passed to [`end`](Handle::begin) or
-    ///   [`reset`](Handle::reset)
-    pub unsafe fn reset(&self, device: &Device, work: Work) {
-        unsafe {
-            device
-                .reset_command_buffer(work.cmd, vk::CommandBufferResetFlags::empty())
-                .unwrap();
-            self.shared.send.send(Message::Reset(work.time)).unwrap();
         }
     }
 
