@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BinaryHeap, VecDeque},
+    mem::ManuallyDrop,
     num::NonZeroU64,
     sync::{
         Arc,
@@ -295,7 +296,7 @@ pub struct Work<'a> {
     inner: ErasedWork,
     // `cmd` is morally a pointer into `cmd_pool` in `Handle`, so this is needed for soundness as
     // well as convenience.
-    handle: Option<&'a Handle>,
+    handle: &'a Handle,
     device: &'a Device,
 }
 
@@ -311,18 +312,17 @@ impl Work<'_> {
     }
 
     /// Send recorded commands out for execution
-    pub fn end(mut self) {
+    pub fn end(self) {
+        let this = ManuallyDrop::new(self);
         // Safety:
         // - `device` is the same one passed to `begin`
         // - Our lifetime guarantees synchronized access to the command pool behind `cmd`
         unsafe {
-            self.device.end_command_buffer(self.inner.cmd).unwrap();
-            self.handle
-                .take()
-                .unwrap()
+            this.device.end_command_buffer(this.inner.cmd).unwrap();
+            this.handle
                 .shared
                 .send
-                .send(Message::Execute(self.inner))
+                .send(Message::Execute(this.inner))
                 .unwrap();
         }
     }
@@ -330,10 +330,6 @@ impl Work<'_> {
 
 impl Drop for Work<'_> {
     fn drop(&mut self) {
-        // Reset this command buffer if and only if `end` wasn't called.
-        let Some(handle) = self.handle else {
-            return;
-        };
         // Safety:
         // - `device` is the same one passed to `begin`
         // - Our lifetime guarantees synchronized access to the command pool behind `cmd`
@@ -341,7 +337,7 @@ impl Drop for Work<'_> {
             self.device
                 .reset_command_buffer(self.inner.cmd, vk::CommandBufferResetFlags::empty())
                 .unwrap();
-            handle
+            self.handle
                 .shared
                 .send
                 .send(Message::Reset(self.inner.time))
@@ -436,7 +432,7 @@ impl Handle {
             in_flight.push_back(work);
             Work {
                 inner: work,
-                handle: Some(self),
+                handle: self,
                 device,
             }
         }
