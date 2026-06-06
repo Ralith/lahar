@@ -38,12 +38,7 @@ impl TimelineRing {
 
     #[inline]
     pub fn free(&self) -> usize {
-        if self.state.head > self.state.tail {
-            return self.state.head - self.state.tail - 1;
-        }
-        self.state
-            .head
-            .max(self.state.capacity - self.state.tail - 1)
+        self.state.max_alloc(1)
     }
 
     /// Free allocations that expire at or before `time`, returning whether any allocations were
