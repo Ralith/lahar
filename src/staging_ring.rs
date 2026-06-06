@@ -11,6 +11,7 @@ pub struct StagingRing {
     align: usize,
     buffer: BackingMem,
     old: Vec<BackingMem>,
+    /// Lowest offset allocated within each frame
     frames: Box<[usize]>,
     current_frame: usize,
 }
@@ -91,6 +92,7 @@ impl StagingRing {
             );
             self.old.push(old);
             self.state = RingState::new(new_size);
+            self.frames.fill(0);
         }
     }
 
