@@ -3,7 +3,7 @@ use std::{mem, ptr::NonNull};
 use crate::{Graveyard, RingState};
 use ash::{Device, vk};
 
-/// A self-growing circular allocator that frees memory
+/// A self-growing circular allocator for memory used for a single frame
 pub struct StagingRing {
     state: RingState,
     memory_type: u32,
