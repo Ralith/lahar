@@ -4,6 +4,7 @@ pub mod graveyard;
 pub mod parallel_queue;
 pub mod staging_ring;
 
+mod growable_ring;
 mod memory;
 mod region;
 mod ring_state;
@@ -11,6 +12,7 @@ mod timeline_ring;
 mod visit_handles;
 
 pub use graveyard::{Graveyard, destroy_dynamic};
+pub use growable_ring::GrowableRing;
 pub use memory::{
     AppendBuffer, DedicatedBuffer, DedicatedImage, DedicatedMapping, MemoryResource, ScratchBuffer,
     Staged, align, alloc_bind, find_memory_type,
