@@ -142,7 +142,8 @@ impl ParallelQueue {
                 .wait_semaphores(
                     &vk::SemaphoreWaitInfo::default()
                         .semaphores(&[self.shared.semaphore, wake])
-                        .values(&[self.first_unsignaled, wake_value]),
+                        .values(&[self.first_unsignaled, wake_value])
+                        .flags(vk::SemaphoreWaitFlags::ANY),
                     !0,
                 )
                 .unwrap();
