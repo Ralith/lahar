@@ -17,6 +17,9 @@ pub struct ParallelQueue {
     recv: mpsc::Receiver<Message>,
     /// The lowest value that will not be signaled by work submitted to the queue so far
     first_unsubmitted: u64,
+    /// The next value that should be submitted to the queue. Usually matches `first_unsubmitted`, but
+    /// dropped unsubmitted work will increment `next_to_submit` without incrementing `first_unsubmitted`.
+    next_to_submit: u64,
     /// The lowest value not yet reached by the semaphore
     first_unsignaled: u64,
     pending: BinaryHeap<Message>,
@@ -55,6 +58,7 @@ impl ParallelQueue {
                 shared,
                 recv,
                 first_unsubmitted: 1,
+                next_to_submit: 1,
                 first_unsignaled: 1,
                 pending: BinaryHeap::new(),
                 queue,
@@ -92,7 +96,7 @@ impl ParallelQueue {
             while self
                 .pending
                 .peek()
-                .map_or(false, |work| work.time().get() == self.first_unsubmitted)
+                .map_or(false, |work| work.time().get() == self.next_to_submit)
             {
                 if let Message::Execute(work) = self.pending.pop().unwrap() {
                     if let Some(debug) = &self.debug
@@ -101,8 +105,9 @@ impl ParallelQueue {
                         cmds.push(debug.begin);
                     }
                     cmds.push(work.cmd);
+                    self.first_unsubmitted = self.next_to_submit + 1;
                 }
-                self.first_unsubmitted += 1;
+                self.next_to_submit += 1;
             }
             if cmds.is_empty() {
                 return;
