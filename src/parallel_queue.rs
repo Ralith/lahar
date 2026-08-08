@@ -15,13 +15,14 @@ use ash::{Device, ext, vk};
 pub struct ParallelQueue {
     shared: Arc<Shared>,
     recv: mpsc::Receiver<Message>,
-    /// The lowest value that will not be signaled by work submitted to the queue so far
-    first_unsubmitted: u64,
-    /// The next value that should be submitted to the queue. Usually matches `first_unsubmitted`, but
-    /// dropped unsubmitted work will increment `next_to_submit` without incrementing `first_unsubmitted`.
+    /// The highest value that will be signaled by work submitted to the queue so far,
+    /// or 0 if no work has been submitted
+    last_submitted: u64,
+    /// The next value that should be submitted to the queue. Usually matches `last_submitted + 1`, but
+    /// dropped unsubmitted work will increment `next_to_submit` without incrementing `last_submitted`.
     next_to_submit: u64,
-    /// The lowest value not yet reached by the semaphore
-    first_unsignaled: u64,
+    /// The highest value the semaphore has reached
+    last_signaled: u64,
     pending: BinaryHeap<Message>,
     queue: vk::Queue,
     debug: Option<DebugLabelContext>,
@@ -57,9 +58,9 @@ impl ParallelQueue {
             Self {
                 shared,
                 recv,
-                first_unsubmitted: 1,
+                last_submitted: 0,
                 next_to_submit: 1,
-                first_unsignaled: 1,
+                last_signaled: 0,
                 pending: BinaryHeap::new(),
                 queue,
                 debug: debug_utils.map(|x| DebugLabelContext::new(device, x, queue_family_index)),
@@ -105,7 +106,7 @@ impl ParallelQueue {
                         cmds.push(debug.begin);
                     }
                     cmds.push(work.cmd);
-                    self.first_unsubmitted = self.next_to_submit + 1;
+                    self.last_submitted = self.next_to_submit;
                 }
                 self.next_to_submit += 1;
             }
@@ -123,7 +124,7 @@ impl ParallelQueue {
                         .signal_semaphores(&[self.shared.semaphore])
                         .push_next(
                             &mut vk::TimelineSemaphoreSubmitInfo::default()
-                                .signal_semaphore_values(&[self.first_unsubmitted - 1]),
+                                .signal_semaphore_values(&[self.last_submitted]),
                         )],
                     vk::Fence::null(),
                 )
@@ -147,7 +148,7 @@ impl ParallelQueue {
                 .wait_semaphores(
                     &vk::SemaphoreWaitInfo::default()
                         .semaphores(&[self.shared.semaphore, wake])
-                        .values(&[self.first_unsignaled, wake_value])
+                        .values(&[self.last_signaled + 1, wake_value])
                         .flags(vk::SemaphoreWaitFlags::ANY),
                     !0,
                 )
@@ -155,7 +156,7 @@ impl ParallelQueue {
             let complete = device
                 .get_semaphore_counter_value(self.shared.semaphore)
                 .unwrap();
-            self.first_unsignaled = complete + 1;
+            self.last_signaled = complete;
             complete
         }
     }
@@ -174,11 +175,11 @@ impl ParallelQueue {
                 .wait_semaphores(
                     &vk::SemaphoreWaitInfo::default()
                         .semaphores(&[self.shared.semaphore])
-                        .values(&[self.first_unsubmitted - 1]),
+                        .values(&[self.last_submitted]),
                     !0,
                 )
                 .unwrap();
-            self.first_unsignaled = self.first_unsubmitted;
+            self.last_signaled = self.last_submitted;
         }
     }
 
