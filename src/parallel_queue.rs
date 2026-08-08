@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BinaryHeap, VecDeque},
     mem::ManuallyDrop,
     num::NonZeroU64,
@@ -290,6 +290,7 @@ impl Shared {
                 cmd_pool,
                 spare_cmds: RefCell::new(spare_cmds),
                 in_flight: RefCell::default(),
+                highest_sent_for_submission: Cell::new(0),
             }
         }
     }
@@ -326,6 +327,9 @@ impl Work<'_> {
         // - Our lifetime guarantees synchronized access to the command pool behind `cmd`
         unsafe {
             this.device.end_command_buffer(this.inner.cmd).unwrap();
+            this.handle
+                .highest_sent_for_submission
+                .update(|value| this.inner.time.get().max(value));
             this.handle
                 .shared
                 .send
@@ -364,6 +368,7 @@ pub struct Handle {
     cmd_pool: vk::CommandPool,
     spare_cmds: RefCell<Vec<vk::CommandBuffer>>,
     in_flight: RefCell<VecDeque<ErasedWork>>,
+    highest_sent_for_submission: Cell<u64>,
 }
 
 impl Handle {
@@ -444,12 +449,36 @@ impl Handle {
         }
     }
 
-    /// Create another handle to the same underlying [`ParallelQueue``]
+    /// Create another handle to the same underlying [`ParallelQueue`]
     ///
     /// # Safety
     /// `device` must match that passed to `new`
     pub unsafe fn handle(&self, device: &Device) -> Handle {
         unsafe { self.shared.handle(device) }
+    }
+
+    /// Wait until all work sent for submission via this [`Handle`] so far is complete
+    ///
+    /// Does not wait for work that has been allocated but not sent for submission. However, it will
+    /// wait for work sent for submission but not yet submitted.
+    ///
+    /// Work sent for submission is only actually submitted when [`ParallelQueue::drive`] is called,
+    /// so to avoid deadlock, do not call this function if the parallel queue is no longer being driven,
+    /// and new work may have been sent for submission via this [`Handle`] since then.
+    ///
+    /// # Safety
+    /// `device` must match that passed to `new`
+    pub unsafe fn drain(&self, device: &Device) {
+        unsafe {
+            device
+                .wait_semaphores(
+                    &vk::SemaphoreWaitInfo::default()
+                        .semaphores(&[self.shared.semaphore])
+                        .values(&[self.highest_sent_for_submission.get()]),
+                    !0,
+                )
+                .unwrap();
+        }
     }
 }
 
