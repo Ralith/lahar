@@ -10,3 +10,6 @@ readme = "README.md"
 
 [dependencies]
 ash = { version = "0.38", default-features = false }
+
+[dev-dependencies]
+ash = { version = "0.38", default-features = false, features = ["linked"] }
